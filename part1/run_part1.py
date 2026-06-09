@@ -51,14 +51,15 @@ def compute_cv_isi(
     per_neuron = {}
     for idx, times in spike_trains.items():
         times = np.asarray(times)
-        in_win = times[(times >= t_start) & (times <= t_end)]
+        in_win = times[(times >= t_start) & (times < t_end)]
         if len(in_win) < min_spikes:
             continue
         isis = np.diff(np.sort(in_win))
         if len(isis) < 2:
             continue
         cv = float(isis.std() / isis.mean())
-        per_neuron[idx] = cv
+        if np.isfinite(cv):
+            per_neuron[idx] = cv
 
     mean_cv = float(np.mean(list(per_neuron.values()))) if per_neuron else float('nan')
     return per_neuron, mean_cv
