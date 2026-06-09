@@ -53,9 +53,22 @@ def test_connectivity_fraction_EE():
     p = DEFAULT_PARAMS['p_connect']
     expected = Ne * (Ne - 1) * p          # no self-connections → Ne*(Ne-1) possible
     actual = len(objs['syn_EE'])
-    # Allow ±20% deviation (Erdos-Renyi variance)
-    assert abs(actual - expected) / expected < 0.20, \
+    # Allow ±5% deviation (Erdos-Renyi variance)
+    assert abs(actual - expected) / expected < 0.05, \
         f"EE connectivity {actual} far from expected {expected:.0f}"
+
+
+def test_connectivity_fraction_EI():
+    start_scope()
+    objs = build_network(DEFAULT_PARAMS, seed=42)
+    Ne = DEFAULT_PARAMS['N_exc']
+    Ni = DEFAULT_PARAMS['N_inh']
+    p = DEFAULT_PARAMS['p_connect']
+    expected = Ne * Ni * p
+    actual = len(objs['syn_EI'])
+    # Allow ±5% deviation (Erdos-Renyi variance)
+    assert abs(actual - expected) / expected < 0.05, \
+        f"EI connectivity {actual} far from expected {expected:.0f}"
 
 
 def test_weights_positive():
@@ -68,11 +81,22 @@ def test_weights_positive():
 
 
 def test_weight_mean_EE():
-    """Mean E->E weight should be close to w_mean_EE (within 20%)."""
+    """Mean E->E weight should be close to w_mean_EE (within 5%)."""
     start_scope()
     objs = build_network(DEFAULT_PARAMS, seed=42)
     from brian2 import amp as brian_amp
     w = np.array(objs['syn_EE'].w / brian_amp)
     target = DEFAULT_PARAMS['w_mean_EE']
-    assert abs(w.mean() - target) / target < 0.20, \
+    assert abs(w.mean() - target) / target < 0.05, \
         f"Mean EE weight {w.mean():.3e} A too far from target {target:.3e} A"
+
+
+def test_weight_mean_IE():
+    """Mean I->E weight should be close to g_EI (within 5%)."""
+    start_scope()
+    objs = build_network(DEFAULT_PARAMS, seed=42)
+    from brian2 import amp as brian_amp
+    w = np.array(objs['syn_IE'].w / brian_amp)
+    target = DEFAULT_PARAMS['g_EI']
+    assert abs(w.mean() - target) / target < 0.05, \
+        f"Mean IE weight {w.mean():.3e} A too far from target {target:.3e} A"

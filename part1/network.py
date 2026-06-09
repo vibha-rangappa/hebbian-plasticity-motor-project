@@ -35,6 +35,7 @@ DEFAULT_PARAMS = {
     'tau_syn_I': 10e-3,   # s    GABA-A-like decay
     'w_mean_EE': 0.06e-9, # A    mean E→E and E→I weight (0.06 nA)
     'sigma_w':   0.5,     #      log-space std for all weight distributions
+    'w_scale_II': 0.2,    #      I→I mean is 0.2× I→E; weaker II preserves AI regime (Brunel 2000)
 
     # Network topology
     'N_exc':     800,
@@ -163,10 +164,10 @@ def build_network(params: dict, seed: int = 42) -> dict:
     g_ei  = p['g_EI']
     sigma = p['sigma_w']
 
-    syn_EE.w = _lognormal_weights(w_ee,       sigma, len(syn_EE), rng) * amp
-    syn_EI.w = _lognormal_weights(w_ee,       sigma, len(syn_EI), rng) * amp
-    syn_IE.w = _lognormal_weights(g_ei,       sigma, len(syn_IE), rng) * amp
-    syn_II.w = _lognormal_weights(0.2 * g_ei, sigma, len(syn_II), rng) * amp
+    syn_EE.w = _lognormal_weights(w_ee,                   sigma, len(syn_EE), rng) * amp
+    syn_EI.w = _lognormal_weights(w_ee,                   sigma, len(syn_EI), rng) * amp
+    syn_IE.w = _lognormal_weights(g_ei,                   sigma, len(syn_IE), rng) * amp
+    syn_II.w = _lognormal_weights(p['w_scale_II'] * g_ei, sigma, len(syn_II), rng) * amp
 
     # Placeholders for drive/monitors — completed in Task 4
     return {
