@@ -141,11 +141,38 @@ def build_network(params: dict, seed: int = 42) -> dict:
     inh.I_exc = 0 * amp
     inh.I_inh = 0 * amp
 
-    # Synapses, external drive, monitors added in later tasks.
-    # Return partial dict so Task 2 tests can run without Task 3 code.
+    # ------------------------------------------------------------------
+    # Synapses
+    # E→target: increments I_exc. I→target: increments I_inh.
+    # All weights positive; sign of inhibition is in the membrane equation.
+    # ------------------------------------------------------------------
+    syn_EE = Synapses(exc, exc, 'w : amp', on_pre='I_exc_post += w', name='syn_EE')
+    syn_EI = Synapses(exc, inh, 'w : amp', on_pre='I_exc_post += w', name='syn_EI')
+    syn_IE = Synapses(inh, exc, 'w : amp', on_pre='I_inh_post += w', name='syn_IE')
+    syn_II = Synapses(inh, inh, 'w : amp', on_pre='I_inh_post += w', name='syn_II')
+
+    p_c = p['p_connect']
+    syn_EE.connect(condition='i != j', p=p_c)
+    syn_EI.connect(p=p_c)
+    syn_IE.connect(p=p_c)
+    syn_II.connect(condition='i != j', p=p_c)
+
+    # Log-normal weight init: E[w] = w_mean for each connection type.
+    # Store raw float arrays; multiply by `amp` to attach Brian2 units.
+    w_ee  = p['w_mean_EE']
+    g_ei  = p['g_EI']
+    sigma = p['sigma_w']
+
+    syn_EE.w = _lognormal_weights(w_ee,       sigma, len(syn_EE), rng) * amp
+    syn_EI.w = _lognormal_weights(w_ee,       sigma, len(syn_EI), rng) * amp
+    syn_IE.w = _lognormal_weights(g_ei,       sigma, len(syn_IE), rng) * amp
+    syn_II.w = _lognormal_weights(0.2 * g_ei, sigma, len(syn_II), rng) * amp
+
+    # Placeholders for drive/monitors — completed in Task 4
     return {
         'exc': exc, 'inh': inh,
-        'syn_EE': None, 'syn_EI': None, 'syn_IE': None, 'syn_II': None,
+        'syn_EE': syn_EE, 'syn_EI': syn_EI,
+        'syn_IE': syn_IE, 'syn_II': syn_II,
         'drive_E': None, 'drive_I': None,
         'spike_E': None, 'spike_I': None,
         'net': None,
