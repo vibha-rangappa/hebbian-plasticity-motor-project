@@ -169,12 +169,37 @@ def build_network(params: dict, seed: int = 42) -> dict:
     syn_IE.w = _lognormal_weights(g_ei,                   sigma, len(syn_IE), rng) * amp
     syn_II.w = _lognormal_weights(p['w_scale_II'] * g_ei, sigma, len(syn_II), rng) * amp
 
-    # Placeholders for drive/monitors — completed in Task 4
+    # ------------------------------------------------------------------
+    # External Poisson drive
+    # Each neuron gets 1 independent Poisson process at nu_ext Hz.
+    # Each spike adds w_mean_EE to I_exc — equivalent to one background E synapse.
+    # Drive goes to I_exc (not I_inh) so it decays with tau_syn_E.
+    # ------------------------------------------------------------------
+    drive_E = PoissonInput(exc, 'I_exc', N=1,
+                           rate=p['nu_ext'] * Hz,
+                           weight=p['w_mean_EE'] * amp)
+    drive_I = PoissonInput(inh, 'I_exc', N=1,
+                           rate=p['nu_ext'] * Hz,
+                           weight=p['w_mean_EE'] * amp)
+
+    # ------------------------------------------------------------------
+    # Spike monitors and Network
+    # ------------------------------------------------------------------
+    spike_E = SpikeMonitor(exc)
+    spike_I = SpikeMonitor(inh)
+
+    net = Network(
+        exc, inh,
+        syn_EE, syn_EI, syn_IE, syn_II,
+        drive_E, drive_I,
+        spike_E, spike_I,
+    )
+
     return {
-        'exc': exc, 'inh': inh,
+        'exc':    exc,    'inh':    inh,
         'syn_EE': syn_EE, 'syn_EI': syn_EI,
         'syn_IE': syn_IE, 'syn_II': syn_II,
-        'drive_E': None, 'drive_I': None,
-        'spike_E': None, 'spike_I': None,
-        'net': None,
+        'drive_E': drive_E, 'drive_I': drive_I,
+        'spike_E': spike_E, 'spike_I': spike_I,
+        'net':    net,
     }

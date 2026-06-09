@@ -100,3 +100,25 @@ def test_weight_mean_IE():
     target = DEFAULT_PARAMS['g_EI']
     assert abs(w.mean() - target) / target < 0.05, \
         f"Mean IE weight {w.mean():.3e} A too far from target {target:.3e} A"
+
+
+def test_network_runs_and_produces_spikes():
+    """
+    Build a small network (80 E, 20 I) and run 200 ms.
+    Verifies the full assembly compiles and spikes are produced.
+    Using N=100 instead of 1000 keeps this test under ~10 s.
+    Requires very strong external drive to bypass lack of inhibitory balance.
+    """
+    start_scope()
+    small = {
+        **DEFAULT_PARAMS,
+        'N_exc': 80,
+        'N_inh': 20,
+        'nu_ext': 5000.0,  # strong drive to overcome membrane time constant
+    }
+    objs = build_network(small, seed=0)
+    objs['net'].run(0.2 * second)
+    assert objs['spike_E'].num_spikes > 0, \
+        "No E spikes in 200 ms — network may be silent"
+    assert objs['spike_I'].num_spikes > 0, \
+        "No I spikes in 200 ms — network may be silent"
