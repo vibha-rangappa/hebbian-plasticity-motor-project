@@ -148,3 +148,75 @@ def compute_power_spectrum(
     power = np.abs(fft_vals) ** 2
 
     return freqs, power
+
+
+# ---------------------------------------------------------------------------
+# HDF5 save
+# ---------------------------------------------------------------------------
+
+def save_baseline(
+    path: str,
+    params: dict,
+    net_objs: dict,
+    validation: dict,
+    seed: int,
+) -> None:
+    """
+    Write the validated baseline network to HDF5.
+
+    Weight matrices stored in COO format — reconstruct with:
+        W = scipy.sparse.coo_matrix((data, (row, col)), shape=shape)
+
+    All parameters stored in SI units. Weights as float32 in amps.
+    """
+    def _save_sparse(grp, name: str, syn, tgt_size: int, src_size: int):
+        # Strip Brian2 units: divide by `amp` → float array in amps
+        w_vals = np.array(syn.w / amp, dtype=np.float32)
+        # .j = postsynaptic (row), .i = presynaptic (col) → W[post, pre]
+        rows = np.array(syn.j[:], dtype=np.int32)
+        cols = np.array(syn.i[:], dtype=np.int32)
+        g = grp.create_group(name)
+        g.create_dataset('data',  data=w_vals)
+        g.create_dataset('row',   data=rows)
+        g.create_dataset('col',   data=cols)
+        g.create_dataset('shape', data=np.array([tgt_size, src_size], dtype=np.int32))
+
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+
+    with h5py.File(path, 'w') as f:
+        # /network
+        ng = f.create_group('network')
+        ng.create_dataset('N_exc',     data=int(params['N_exc']))
+        ng.create_dataset('N_inh',     data=int(params['N_inh']))
+        ng.create_dataset('p_connect', data=float(params['p_connect']))
+
+        pn = ng.create_group('params_neuron')
+        for k in ('tau_m', 'V_rest', 'V_th', 'V_reset', 'tau_ref', 'R'):
+            pn.create_dataset(k, data=float(params[k]))
+
+        ps = ng.create_group('params_synapse')
+        for k in ('tau_syn_E', 'tau_syn_I', 'g_EI'):
+            ps.create_dataset(k, data=float(params[k]))
+        ps.create_dataset('nu_ext', data=float(params['nu_ext']))
+
+        # /weights — COO sparse format, SI units (amps as float32)
+        wg = f.create_group('weights')
+        Ne, Ni = params['N_exc'], params['N_inh']
+        _save_sparse(wg, 'W_EE', net_objs['syn_EE'], Ne, Ne)
+        _save_sparse(wg, 'W_EI', net_objs['syn_EI'], Ni, Ne)  # target=I, source=E
+        _save_sparse(wg, 'W_IE', net_objs['syn_IE'], Ne, Ni)  # target=E, source=I
+        _save_sparse(wg, 'W_II', net_objs['syn_II'], Ni, Ni)
+
+        # /validation
+        vg = f.create_group('validation')
+        vg.create_dataset('mean_rate_E',        data=float(validation['mean_rate_E']))
+        vg.create_dataset('mean_rate_I',        data=float(validation['mean_rate_I']))
+        vg.create_dataset('mean_CV_ISI',        data=float(validation['mean_CV_ISI']))
+        vg.create_dataset('mean_pairwise_corr', data=float(validation['mean_pairwise_corr']))
+        vg.create_dataset('raster_times',
+                          data=np.asarray(validation['raster_times'], dtype=np.float32))
+        vg.create_dataset('raster_indices',
+                          data=np.asarray(validation['raster_indices'], dtype=np.int32))
+        vg.create_dataset('seed',      data=int(seed))
+        vg.create_dataset('nu_ext_hz', data=float(params['nu_ext']))
+        vg.create_dataset('g_EI_nA',   data=float(params['g_EI'] / 1e-9))  # A → nA
