@@ -171,15 +171,18 @@ def build_network(params: dict, seed: int = 42) -> dict:
 
     # ------------------------------------------------------------------
     # External Poisson drive
-    # N=1: a single Poisson generator per NeuronGroup; Brian2 draws independently
-    # for each target neuron, so all neurons get uncorrelated background input.
-    # Each spike adds w_mean_EE to I_exc — equivalent to one background E synapse.
-    # Drive goes to I_exc (not I_inh) so it decays with tau_syn_E.
+    # N_ext ≈ excitatory recurrent fan-in (N_exc × p_connect).
+    # Each neuron receives N_ext independent Poisson inputs at nu_ext Hz,
+    # matching Brunel's C_ext × ν_ext parameterisation: nu_ext is the rate
+    # per external synapse, not the aggregate rate.
+    # Total mean background current per neuron ≈ N_ext × nu_ext × w_mean_EE × tau_syn_E.
+    # Drive goes to I_exc so it decays with tau_syn_E.
     # ------------------------------------------------------------------
-    drive_E = PoissonInput(exc, 'I_exc', N=1,
+    N_ext = int(p['N_exc'] * p['p_connect'])
+    drive_E = PoissonInput(exc, 'I_exc', N=N_ext,
                            rate=p['nu_ext'] * Hz,
                            weight=p['w_mean_EE'] * amp)
-    drive_I = PoissonInput(inh, 'I_exc', N=1,
+    drive_I = PoissonInput(inh, 'I_exc', N=N_ext,
                            rate=p['nu_ext'] * Hz,
                            weight=p['w_mean_EE'] * amp)
 

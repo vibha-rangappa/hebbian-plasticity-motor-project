@@ -35,8 +35,8 @@ RESULTS_DIR = os.path.join(os.path.dirname(__file__), 'results')
 # g_EI_scale:  6 scale factors applied to w_mean_EE
 # Total: 30 grid points
 # ------------------------------------------------------------------
-NU_EXT_VALS = np.linspace(5, 25, 5)           # Hz
-G_EI_SCALES = np.linspace(0.5, 2.0, 6)        # multipliers on w_mean_EE
+NU_EXT_VALS = np.linspace(5, 25, 5)           # Hz (per external synapse; total rate = N_ext × nu_ext)
+G_EI_SCALES = np.linspace(2.0, 8.0, 6)        # × w_mean_EE; Brunel AI regime ≈ 2–8×
 W_MEAN_EE   = DEFAULT_PARAMS['w_mean_EE']      # A
 G_EI_VALS   = G_EI_SCALES * W_MEAN_EE         # A
 
