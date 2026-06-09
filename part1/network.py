@@ -171,19 +171,20 @@ def build_network(params: dict, seed: int = 42) -> dict:
 
     # ------------------------------------------------------------------
     # External Poisson drive
-    # N_ext ≈ excitatory recurrent fan-in (N_exc × p_connect).
-    # Each neuron receives N_ext independent Poisson inputs at nu_ext Hz,
-    # matching Brunel's C_ext × ν_ext parameterisation: nu_ext is the rate
-    # per external synapse, not the aggregate rate.
-    # Total mean background current per neuron ≈ N_ext × nu_ext × w_mean_EE × tau_syn_E.
+    # N=1 gives each target neuron one INDEPENDENT Poisson process.
+    # Brian2's N>1 shares spike trains across all target neurons, introducing
+    # correlated background that triggers synchronised inhibition and kills AI.
+    # We instead scale the rate by N_ext (≈ recurrent E fan-in) so the mean
+    # background current matches C_ext×ν_ext in Brunel's parameterisation:
+    #   E[I_bg] = N_ext × nu_ext × w_mean_EE × tau_syn_E
     # Drive goes to I_exc so it decays with tau_syn_E.
     # ------------------------------------------------------------------
-    N_ext = int(p['N_exc'] * p['p_connect'])
-    drive_E = PoissonInput(exc, 'I_exc', N=N_ext,
-                           rate=p['nu_ext'] * Hz,
+    N_ext = int(p['N_exc'] * p['p_connect'])   # = 80 for full network
+    drive_E = PoissonInput(exc, 'I_exc', N=1,
+                           rate=N_ext * p['nu_ext'] * Hz,
                            weight=p['w_mean_EE'] * amp)
-    drive_I = PoissonInput(inh, 'I_exc', N=N_ext,
-                           rate=p['nu_ext'] * Hz,
+    drive_I = PoissonInput(inh, 'I_exc', N=1,
+                           rate=N_ext * p['nu_ext'] * Hz,
                            weight=p['w_mean_EE'] * amp)
 
     # ------------------------------------------------------------------
