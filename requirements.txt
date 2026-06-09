@@ -1,0 +1,6 @@
+brian2>=2.5.0
+numpy<2.0  # brian2 uses np.ndarray.ptp which was removed in NumPy 2.0
+scipy
+matplotlib
+h5py
+pytest
