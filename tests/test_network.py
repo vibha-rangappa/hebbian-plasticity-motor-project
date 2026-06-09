@@ -114,7 +114,7 @@ def test_network_runs_and_produces_spikes():
         **DEFAULT_PARAMS,
         'N_exc': 80,
         'N_inh': 20,
-        'nu_ext': 5000.0,  # strong drive to overcome membrane time constant
+        'nu_ext': 1000.0,  # 1000 Hz smoke-test drive to guarantee spikes; the spec's 20 Hz does not reliably produce spikes in such short windows with N=100
     }
     objs = build_network(small, seed=0)
     objs['net'].run(0.2 * second)
