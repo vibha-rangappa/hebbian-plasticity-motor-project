@@ -171,7 +171,8 @@ def build_network(params: dict, seed: int = 42) -> dict:
 
     # ------------------------------------------------------------------
     # External Poisson drive
-    # Each neuron gets 1 independent Poisson process at nu_ext Hz.
+    # N=1: a single Poisson generator per NeuronGroup; Brian2 draws independently
+    # for each target neuron, so all neurons get uncorrelated background input.
     # Each spike adds w_mean_EE to I_exc — equivalent to one background E synapse.
     # Drive goes to I_exc (not I_inh) so it decays with tau_syn_E.
     # ------------------------------------------------------------------
