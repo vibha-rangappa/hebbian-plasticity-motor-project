@@ -57,7 +57,8 @@ def run_grid_point(nu_ext: float, g_EI: float) -> tuple:
     objs['net'].run(1.0 * second)
 
     Ne = params['N_exc']
-    mean_rate_E = objs['spike_E'].num_spikes / (Ne * 1.0)
+    T_sim = 1.0  # seconds — matches net.run duration above
+    mean_rate_E = objs['spike_E'].num_spikes / (Ne * T_sim)
 
     trains_E = _extract_spike_trains(objs['spike_E'], Ne, 1.0)
     _, mean_cv = compute_cv_isi(trains_E, 0.0, 1.0, min_spikes=5)
@@ -92,6 +93,9 @@ def save_heatmap(results: list, path: str) -> None:
         rate_grid[i, j] = row['mean_rate_E_hz']
         cv_grid[i, j]   = row['mean_CV_ISI']
 
+    # -1 encodes NaN CV (no qualifying spikes) — convert back before plotting
+    cv_grid[cv_grid == -1] = np.nan
+
     g_ei_nA = G_EI_VALS / 1e-9  # A → nA for axis labels
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
@@ -101,9 +105,10 @@ def save_heatmap(results: list, path: str) -> None:
                    extent=[g_ei_nA[0], g_ei_nA[-1], NU_EXT_VALS[0], NU_EXT_VALS[-1]],
                    vmin=0, vmax=30, cmap='viridis')
     plt.colorbar(im, ax=ax, label='Mean E rate (Hz)')
-    cs = ax.contour(g_ei_nA, NU_EXT_VALS, rate_grid,
-                    levels=[RATE_MIN, RATE_MAX], colors='white', linewidths=1.5)
-    ax.clabel(cs, fmt='%.0f Hz')
+    if not np.all(np.isnan(rate_grid)):
+        cs = ax.contour(g_ei_nA, NU_EXT_VALS, rate_grid,
+                        levels=[RATE_MIN, RATE_MAX], colors='white', linewidths=1.5)
+        ax.clabel(cs, fmt='%.0f Hz')
     ax.set_xlabel('g_EI (nA)')
     ax.set_ylabel('nu_ext (Hz)')
     ax.set_title('Mean E firing rate\nWhite contours: 2 Hz, 10 Hz (AI band)')
@@ -113,9 +118,10 @@ def save_heatmap(results: list, path: str) -> None:
                    extent=[g_ei_nA[0], g_ei_nA[-1], NU_EXT_VALS[0], NU_EXT_VALS[-1]],
                    vmin=0, vmax=2, cmap='plasma')
     plt.colorbar(im, ax=ax, label='Mean CV-ISI')
-    cs = ax.contour(g_ei_nA, NU_EXT_VALS, cv_grid,
-                    levels=[CV_MIN, CV_MAX], colors='white', linewidths=1.5)
-    ax.clabel(cs, fmt='%.1f')
+    if not np.all(np.isnan(cv_grid)):
+        cs = ax.contour(g_ei_nA, NU_EXT_VALS, cv_grid,
+                        levels=[CV_MIN, CV_MAX], colors='white', linewidths=1.5)
+        ax.clabel(cs, fmt='%.1f')
     ax.set_xlabel('g_EI (nA)')
     ax.set_ylabel('nu_ext (Hz)')
     ax.set_title('Mean CV-ISI\nWhite contours: 0.8, 1.2 (AI band)\nTarget: overlap with left panel')
