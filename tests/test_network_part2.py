@@ -123,6 +123,43 @@ def test_build_stdp_network_applies_pool_rescaling():
     np.testing.assert_allclose(w_after, expected, rtol=1e-6)
 
 
+def test_build_stdp_network_clips_initial_weights_to_w_max():
+    """
+    Part 1's lognormal W_EE is unbounded, but Part 2's w_max is enforced by
+    clip() on every STDP event regardless of `plastic` -- so a synapse with
+    w > w_max would get silently clamped to w_max on its first spike, even
+    during the frozen burn-in. build_stdp_network must clip inherited
+    weights to w_max BEFORE pool rescaling, so:
+      - initial weights are deterministic (don't depend on burn-in spike
+        timing), and
+      - the seeded/control cross-pool ratio is exactly p_cross even for
+        synapses whose Part 1 weight exceeded w_max (0.2*w_max for seeded
+        vs w_max for control => ratio 0.2, not something else).
+    """
+    start_scope()
+    small = _small_params()
+    net_objs = build_network(small, seed=1)
+    syn = net_objs['syn_EE']
+
+    i_arr = np.array(syn.i[:])
+    j_arr = np.array(syn.j[:])
+    in_P = i_arr < small['P_size']
+    in_X = (i_arr >= small['P_size']) & (i_arr < small['P_size'] + small['X_size'])
+    j_in_P = j_arr < small['P_size']
+    j_in_X = (j_arr >= small['P_size']) & (j_arr < small['P_size'] + small['X_size'])
+    cross_idx = np.where((in_P & j_in_X) | (in_X & j_in_P))[0][0]
+
+    w = np.array(syn.w[:] / amp)
+    w[cross_idx] = small['w_max'] * 1.5  # above w_max, as Part 1 init can produce
+    syn.w = w * amp
+
+    result = build_stdp_network(net_objs, small, p_cross=0.2, seed=1)
+    w_after = np.array(result['syn_EE'].w[:] / amp)
+
+    assert np.all(w_after <= small['w_max'])
+    np.testing.assert_allclose(w_after[cross_idx], 0.2 * small['w_max'], rtol=1e-6)
+
+
 def test_build_stdp_network_has_stdp_state_variables():
     start_scope()
     small = _small_params()

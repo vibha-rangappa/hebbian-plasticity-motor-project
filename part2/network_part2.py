@@ -157,6 +157,15 @@ def build_stdp_network(net_objs, params, p_cross, seed=42):
     j_arr = np.array(old_syn_EE.j[:], dtype=np.int32)
     w_arr = np.array(old_syn_EE.w[:] / amp, dtype=np.float64)
 
+    # Part 1's lognormal W_EE is unbounded, but the STDP on_pre/on_post
+    # clip(..., 0, w_max) below applies on every spike regardless of
+    # `plastic` -- a synapse with w > w_max would be silently clamped to
+    # w_max on its first spike (even during the frozen burn-in). Clip here,
+    # before pool rescaling, so initial weights don't depend on burn-in
+    # spike timing and the seeded/control cross-pool ratio is exactly
+    # p_cross even for synapses whose Part 1 weight exceeded w_max.
+    w_arr = np.clip(w_arr, 0.0, p['w_max'])
+
     w_rescaled = apply_pool_rescaling(
         i_arr, j_arr, w_arr, p_cross, p['P_size'], p['X_size'])
 
