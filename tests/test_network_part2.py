@@ -5,13 +5,14 @@ import os
 import numpy as np
 import pytest
 import h5py
-from brian2 import start_scope, second, amp
+from brian2 import start_scope, second, amp, Hz
 
 from part1.network import build_network, DEFAULT_PARAMS
 from part2.network_part2 import (
     DEFAULT_PARAMS_PART2,
     apply_pool_rescaling,
     load_part1_baseline,
+    build_stdp_network,
 )
 
 
@@ -81,3 +82,122 @@ def test_load_part1_baseline_raises_on_mismatched_params():
     bad_params = {**DEFAULT_PARAMS, 'N_exc': 10}
     with pytest.raises(ValueError):
         load_part1_baseline(BASELINE_H5, bad_params, seed=42)
+
+
+def _small_params(**overrides):
+    """20 E + 5 I neurons, P=[0,8), X=[8,16), S=[16,20)."""
+    return {
+        **DEFAULT_PARAMS, **DEFAULT_PARAMS_PART2,
+        'N_exc': 20, 'N_inh': 5,
+        'P_size': 8, 'X_size': 8,
+        **overrides,
+    }
+
+
+def test_build_stdp_network_preserves_connectivity():
+    start_scope()
+    small = _small_params()
+    net_objs = build_network(small, seed=1)
+    i_before = np.array(net_objs['syn_EE'].i[:])
+    j_before = np.array(net_objs['syn_EE'].j[:])
+
+    result = build_stdp_network(net_objs, small, p_cross=0.2, seed=1)
+    syn = result['syn_EE']
+    np.testing.assert_array_equal(np.array(syn.i[:]), i_before)
+    np.testing.assert_array_equal(np.array(syn.j[:]), j_before)
+
+
+def test_build_stdp_network_applies_pool_rescaling():
+    start_scope()
+    small = _small_params()
+    net_objs = build_network(small, seed=1)
+    i_arr = np.array(net_objs['syn_EE'].i[:])
+    j_arr = np.array(net_objs['syn_EE'].j[:])
+    w_before = np.array(net_objs['syn_EE'].w[:] / amp)
+
+    result = build_stdp_network(net_objs, small, p_cross=0.2, seed=1)
+    w_after = np.array(result['syn_EE'].w[:] / amp)
+
+    expected = apply_pool_rescaling(i_arr, j_arr, w_before, p_cross=0.2,
+                                     P_size=small['P_size'], X_size=small['X_size'])
+    np.testing.assert_allclose(w_after, expected, rtol=1e-6)
+
+
+def test_build_stdp_network_has_stdp_state_variables():
+    start_scope()
+    small = _small_params()
+    net_objs = build_network(small, seed=1)
+    result = build_stdp_network(net_objs, small, p_cross=1.0, seed=1)
+    syn = result['syn_EE']
+    assert hasattr(syn, 'plastic')
+    assert hasattr(syn, 'apre')
+    assert hasattr(syn, 'apost')
+    assert np.all(np.array(syn.plastic[:]) == 1)
+
+
+def test_build_stdp_network_adds_input_neurons():
+    start_scope()
+    small = _small_params()
+    net_objs = build_network(small, seed=1)
+    result = build_stdp_network(net_objs, small, p_cross=1.0, seed=1)
+
+    assert len(result['input_group']) == small['n_input']
+    assert len(result['syn_input_E']) > 0
+    assert len(result['syn_input_I']) > 0
+
+    w_E = np.array(result['syn_input_E'].w[:] / amp)
+    w_I = np.array(result['syn_input_I'].w[:] / amp)
+    assert np.all(w_E > 0)
+    assert np.all(w_I > 0)
+
+
+def test_build_stdp_network_input_rates_default_to_background():
+    start_scope()
+    small = _small_params()
+    net_objs = build_network(small, seed=1)
+    result = build_stdp_network(net_objs, small, p_cross=1.0, seed=1)
+    rates = np.array(result['input_group'].rates[:] / Hz)
+    np.testing.assert_allclose(rates, small['r_background'])
+
+
+def test_stdp_plastic_zero_freezes_weights():
+    start_scope()
+    small = _small_params(nu_ext=1000.0)
+    net_objs = build_network(small, seed=1)
+    result = build_stdp_network(net_objs, small, p_cross=1.0, seed=1)
+    syn = result['syn_EE']
+    syn.plastic = 0
+
+    w_before = np.array(syn.w[:] / amp).copy()
+    result['net'].run(0.1 * second)
+    w_after = np.array(syn.w[:] / amp)
+    np.testing.assert_allclose(w_before, w_after)
+
+
+def test_stdp_plastic_one_changes_weights():
+    start_scope()
+    small = _small_params(nu_ext=1000.0)
+    net_objs = build_network(small, seed=1)
+    result = build_stdp_network(net_objs, small, p_cross=1.0, seed=1)
+    syn = result['syn_EE']
+
+    w_before = np.array(syn.w[:] / amp).copy()
+    result['net'].run(0.5 * second)
+    w_after = np.array(syn.w[:] / amp)
+    # atol=0: weights are ~1e-11 (amps), so np.allclose's default atol=1e-8
+    # would mask any realistic change at this magnitude.
+    assert not np.allclose(w_before, w_after, atol=0), \
+        "STDP did not change any weights in 0.5 s"
+
+
+def test_stdp_weights_clipped_to_w_max():
+    start_scope()
+    small = _small_params(nu_ext=1000.0)
+    net_objs = build_network(small, seed=1)
+    result = build_stdp_network(net_objs, small, p_cross=1.0, seed=1)
+    syn = result['syn_EE']
+
+    result['net'].run(1.0 * second)
+    w_after = np.array(syn.w[:] / amp)
+    assert np.all(w_after >= 0.0)
+    assert np.all(w_after <= small['w_max'] * 1.0000001)
