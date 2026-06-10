@@ -6,13 +6,18 @@ from brian2 import start_scope, second, amp, Hz
 
 from part1.network import build_network, DEFAULT_PARAMS
 from part2.network_part2 import DEFAULT_PARAMS_PART2, build_stdp_network
-from part2.task import assign_preferred_directions, generate_test_trial_sequence
+from part2.task import (
+    assign_preferred_directions,
+    generate_trial_sequence,
+    generate_test_trial_sequence,
+)
 from part2.run_part2 import (
     run_one_trial,
     extract_snapshot_spikes,
     compute_monitoring_metrics,
     check_abort_criteria,
     run_snapshot,
+    run_condition,
 )
 from part2.snapshot import load_snapshot, load_monitoring
 
@@ -145,3 +150,55 @@ def test_run_snapshot_freezes_weights_during_test_trials(tmp_path):
 
     w_after = np.array(syn.w[:] / amp)
     np.testing.assert_allclose(w_before, w_after)
+
+
+def test_run_condition_small_network_writes_snapshots(tmp_path):
+    start_scope()
+    net_objs, small, theta_i = _small_setup()
+    small = {**small, 't_burn_in': 0.1}  # keep the test fast
+
+    h5_path = str(tmp_path / "test_condition.h5")
+    short_test_sequence = generate_test_trial_sequence(
+        n_per_direction=1, n_directions=small['n_directions'])
+
+    run_condition(net_objs, small, h5_path, theta_i,
+                   n_per_direction=1, snapshot_epochs={0, 8},
+                   seed=1, condition_name='test',
+                   check_abort=False, test_trial_sequence=short_test_sequence)
+
+    mon = load_monitoring(h5_path)
+    np.testing.assert_array_equal(mon['epochs'], [0, 8])
+
+    snap0 = load_snapshot(h5_path, epoch=0)
+    snap8 = load_snapshot(h5_path, epoch=8)
+    assert snap0['W_EE_coo']['data'].shape == snap8['W_EE_coo']['data'].shape
+    np.testing.assert_array_equal(snap0['trial_labels'], short_test_sequence)
+
+
+def test_run_condition_runs_correct_number_of_training_trials():
+    start_scope()
+    net_objs, small, theta_i = _small_setup()
+    small = {**small, 't_burn_in': 0.1}
+    short_test_sequence = generate_test_trial_sequence(
+        n_per_direction=1, n_directions=small['n_directions'])
+
+    t_before = net_objs['net'].t / second
+
+    import tempfile, os as _os
+    fd, h5_path = tempfile.mkstemp(suffix='.h5')
+    _os.close(fd)
+    _os.remove(h5_path)
+    try:
+        run_condition(net_objs, small, h5_path, theta_i,
+                       n_per_direction=1, snapshot_epochs=set(),
+                       seed=1, condition_name='test',
+                       check_abort=False, test_trial_sequence=short_test_sequence)
+    finally:
+        if _os.path.exists(h5_path):
+            _os.remove(h5_path)
+
+    t_after = net_objs['net'].t / second
+    trial_dur = small['t_prep'] + small['t_exec'] + small['t_iti']
+    n_trials = small['n_directions'] * 1  # n_per_direction=1
+    expected = small['t_burn_in'] + n_trials * trial_dur
+    assert (t_after - t_before) == pytest.approx(expected)
