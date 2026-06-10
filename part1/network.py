@@ -35,16 +35,27 @@ DEFAULT_PARAMS = {
     'tau_syn_I': 10e-3,   # s    GABA-A-like decay
     'w_mean_EE': 0.06e-9, # A    mean E→E and E→I weight (0.06 nA)
     'sigma_w':   0.5,     #      log-space std for all weight distributions
-    'w_scale_II': 0.2,    #      I→I mean is 0.2× I→E; weaker II preserves AI regime (Brunel 2000)
 
     # Network topology
     'N_exc':     800,
     'N_inh':     200,
     'p_connect': 0.1,
 
-    # Operating point — override with tune_part1.py results
-    'g_EI':   4 * 0.06e-9,  # A    mean I→E weight; starting point = 4× w_mean_EE
-    'nu_ext': 10.0,           # Hz   background Poisson rate per neuron
+    # Operating point — tuned empirically to produce stable AI regime.
+    # Tuning procedure: 30-s multi-seed scan over (nu_ext, g_EI, w_scale_II).
+    # Target: rate 2–10 Hz, CV-ISI 0.8–1.2, pairwise corr <0.05 in [20–30 s] window.
+    # nu_ext = 7.0 Hz (above the 6.25 Hz threshold rate): gives a slightly wider
+    #   AI corridor (lower boundary drops to g_EI≈0.070 vs ≈0.075 at nu=6.25).
+    # g_EI = 0.090 nA (1.5× w_mean_EE): chosen for STDP headroom — see note below.
+    # w_scale_II = 0.50: I→I half of I→E; empirically needed for stable fixed point
+    #   (0.2 → E rate decays to <1 Hz; 1.0 → E runaway because I self-cancels).
+    # STDP headroom: with g_EI=0.090, w_EE can grow ~29% before CV drops below 0.8
+    #   (soft boundary at g_eff=0.070 nA). Hard oscillatory boundary is ~55% away.
+    #   2× headroom is architecturally impossible in this network (80 inputs/neuron
+    #   + diffusion regime); weight normalization in Part 2 is the primary protection.
+    'g_EI':     0.090e-9,   # A    mean I→E inhibitory weight (1.5× w_mean_EE)
+    'nu_ext':   7.0,        # Hz   background Poisson rate per neuron (> threshold)
+    'w_scale_II': 0.50,     #      I→I mean = 0.50× g_EI
 }
 
 
