@@ -193,6 +193,14 @@ def _select_codegen_backend():
     part1.network, which sets prefs.codegen.target = 'numpy' at import time
     (see part1/network.py module-level prefs assignment).
 
+    Must ALSO be called AFTER load_part1_baseline()/build_network(): their
+    `.connect(p=...)` calls and `rand()`-based v init execute immediately
+    under whatever codegen target is active, and Brian2's RNG-consumption
+    pattern for those calls differs between 'numpy' and 'cython' even with
+    the same seed. baseline_network.h5 was generated under 'numpy', so
+    reproducing its connectivity only works if build_network() also runs
+    under 'numpy'.
+
     Falls back to numpy if no working C++ compiler is found.
     """
     prefs.codegen.target = 'cython'
@@ -274,8 +282,6 @@ def main():
     parser.add_argument('--results_dir', type=str, default='part2/results')
     args = parser.parse_args()
 
-    _select_codegen_backend()
-
     params = {**DEFAULT_PARAMS, **DEFAULT_PARAMS_PART2}
     p_cross = (params['p_cross_seeded'] if args.condition == 'seeded'
                else params['p_cross_control'])
@@ -293,6 +299,11 @@ def main():
     net_objs = load_part1_baseline(args.baseline_h5, params, seed=args.seed)
     net_objs = build_stdp_network(net_objs, params, p_cross=p_cross, seed=args.seed)
     theta_i = assign_preferred_directions(params['n_input'], params['n_directions'])
+
+    # Codegen target is selected only after the network is fully built (see
+    # _select_codegen_backend's docstring) so that load_part1_baseline()'s
+    # connectivity reproduction matches baseline_network.h5 exactly.
+    _select_codegen_backend()
 
     run_condition(net_objs, params, h5_path, theta_i,
                    n_per_direction=args.n_per_direction,
