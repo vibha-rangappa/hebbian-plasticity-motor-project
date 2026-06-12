@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from part2.task import (
+from plasticity.center_out_task import (
     assign_preferred_directions,
     rates_for_phase,
     generate_trial_sequence,

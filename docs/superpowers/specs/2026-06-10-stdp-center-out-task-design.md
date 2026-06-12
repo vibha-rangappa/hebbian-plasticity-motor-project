@@ -20,9 +20,9 @@ This is one project executed in two phases:
 
 ## Prerequisite
 
-Part 1 is complete and validated (`part1/results/baseline_network.h5`, operating
+Part 1 is complete and validated (`circuit/results/baseline_network.h5`, operating
 point `nu_ext=7.0 Hz`, `g_EI=0.090 nA`, `w_scale_II=0.50`; see
-`docs/part1_tuning_notes.md`). Part 2 loads this baseline rather than building a
+`docs/circuit_tuning_notes.md`). Part 2 loads this baseline rather than building a
 network from scratch.
 
 **Critical constraint carried over from Part 1:** w_EE can grow at most ~29%
@@ -59,9 +59,9 @@ Each module has one job: `network_part2.py` only builds Brian2 objects,
 
 ### 1.1 Loading the Part 1 baseline
 
-`load_part1_baseline(h5_path, params, seed=42)`:
+`load_baseline(h5_path, params, seed=42)`:
 
-1. Calls `build_network(params, seed=seed)` from `part1/network.py` with the
+1. Calls `build_network(params, seed=seed)` from `circuit/network.py` with the
    same `DEFAULT_PARAMS` and seed used to produce `baseline_network.h5`. Because
    both Brian2's RNG (`brian2_seed`) and the numpy RNG used for weight
    initialization are seeded identically, this **deterministically reproduces**
@@ -137,7 +137,7 @@ spikes and avoids per-timestep updates for ~64,000 synapses.
 `plastic` is a **shared** synapse-level variable (one value for the whole
 group). Setting `syn_EE_stdp.plastic = 0` freezes weight changes (traces still
 update) — used during burn-in and snapshot test trials. `syn_EI`, `syn_IE`,
-`syn_II` are carried over from `load_part1_baseline()` unchanged — STDP applies
+`syn_II` are carried over from `load_baseline()` unchanged — STDP applies
 only to E→E.
 
 **STDP parameters:**
@@ -188,7 +188,7 @@ spike_input = SpikeMonitor(input_group)
 `build_stdp_network(net_objs, params, p_cross)` returns a new `net_objs` dict
 with `syn_EE` replaced by `syn_EE_stdp`, plus `input_group`, `syn_input_E`,
 `syn_input_I`, `spike_input` added, and a fresh `Network(...)` containing all of
-these plus everything from `load_part1_baseline()` (`exc`, `inh`, `syn_EI`,
+these plus everything from `load_baseline()` (`exc`, `inh`, `syn_EI`,
 `syn_IE`, `syn_II`, `drive_E`, `drive_I`, `spike_E`, `spike_I`).
 
 Background Poisson drive (`drive_E`, `drive_I`, `nu_ext=7.0 Hz`) **continues
@@ -266,7 +266,7 @@ Total = 1.2 s/trial.
 
 Part 1's tuning notes warn: "If Part 2 loads the HDF5 weights but reinitializes
 V randomly, you'll see the same 15-second transient." `build_network()`
-initializes `V ~ U[V_reset, V_th]`, so `load_part1_baseline()` reproduces this
+initializes `V ~ U[V_reset, V_th]`, so `load_baseline()` reproduces this
 random initial condition.
 
 For the full 3840s Phase B run, a 15-20s transient is <0.5% of total time and
@@ -363,8 +363,8 @@ follow-up if it occurs, not handled automatically.
 Two files, fully self-contained (each copies `/network`, `/weights`,
 `/validation` from `baseline_network.h5` for provenance):
 
-- `part2/results/training_seeded.h5` (`p_cross=0.2`)
-- `part2/results/training_control.h5` (`p_cross=1.0`)
+- `plasticity/results/training_seeded.h5` (`p_cross=0.2`)
+- `plasticity/results/training_control.h5` (`p_cross=1.0`)
 
 ```
 /network        — copied from Part 1 (params, seed, etc.)
@@ -385,7 +385,7 @@ Two files, fully self-contained (each copies `/network`, `/weights`,
     frac_w_max          — (n_snapshots,) float
     mean_cv_isi         — (n_snapshots,) float
 
-/part2_params       — attrs: p_cross, tau_plus, tau_minus, A_plus, A_minus,
+/training_params       — attrs: p_cross, tau_plus, tau_minus, A_plus, A_minus,
                        w_max, n_input, r_max, trial sequence seed, burn-in duration
 ```
 

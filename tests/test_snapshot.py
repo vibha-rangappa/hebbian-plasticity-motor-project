@@ -4,10 +4,10 @@ import h5py
 import numpy as np
 import pytest
 
-from part2.network_part2 import DEFAULT_PARAMS_PART2
-from part2.snapshot import (
+from plasticity.stdp_network import DEFAULT_PARAMS_PLASTICITY
+from plasticity.snapshot import (
     save_snapshot, load_snapshot, load_monitoring,
-    copy_part1_provenance, save_part2_params,
+    copy_baseline_provenance, save_training_params,
 )
 
 
@@ -93,7 +93,7 @@ def test_load_snapshot_missing_epoch_raises_keyerror(tmp_path):
         load_snapshot(h5_path, epoch=999)
 
 
-def test_copy_part1_provenance_copies_groups(tmp_path):
+def test_copy_baseline_provenance_copies_groups(tmp_path):
     baseline_path = str(tmp_path / "baseline.h5")
     with h5py.File(baseline_path, 'w') as f:
         ng = f.create_group('network')
@@ -105,7 +105,7 @@ def test_copy_part1_provenance_copies_groups(tmp_path):
         vg.create_dataset('mean_rate_E', data=2.5)
 
     h5_path = str(tmp_path / "test.h5")
-    copy_part1_provenance(h5_path, baseline_path)
+    copy_baseline_provenance(h5_path, baseline_path)
 
     with h5py.File(h5_path, 'r') as f:
         assert f['network/N_exc'][()] == 20
@@ -113,14 +113,14 @@ def test_copy_part1_provenance_copies_groups(tmp_path):
         assert f['validation/mean_rate_E'][()] == pytest.approx(2.5)
 
 
-def test_save_part2_params_writes_attrs(tmp_path):
+def test_save_training_params_writes_attrs(tmp_path):
     h5_path = str(tmp_path / "test.h5")
-    save_part2_params(h5_path, DEFAULT_PARAMS_PART2, p_cross=0.2, seed=42)
+    save_training_params(h5_path, DEFAULT_PARAMS_PLASTICITY, p_cross=0.2, seed=42)
 
     with h5py.File(h5_path, 'r') as f:
-        attrs = f['part2_params'].attrs
+        attrs = f['training_params'].attrs
         assert attrs['p_cross'] == pytest.approx(0.2)
         assert attrs['seed'] == 42
-        assert attrs['tau_plus'] == pytest.approx(DEFAULT_PARAMS_PART2['tau_plus'])
-        assert attrs['w_max'] == pytest.approx(DEFAULT_PARAMS_PART2['w_max'])
-        assert attrs['t_burn_in'] == pytest.approx(DEFAULT_PARAMS_PART2['t_burn_in'])
+        assert attrs['tau_plus'] == pytest.approx(DEFAULT_PARAMS_PLASTICITY['tau_plus'])
+        assert attrs['w_max'] == pytest.approx(DEFAULT_PARAMS_PLASTICITY['w_max'])
+        assert attrs['t_burn_in'] == pytest.approx(DEFAULT_PARAMS_PLASTICITY['t_burn_in'])

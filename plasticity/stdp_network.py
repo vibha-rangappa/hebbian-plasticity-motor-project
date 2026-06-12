@@ -1,12 +1,12 @@
-# part2/network_part2.py
+# plasticity/stdp_network.py
 
 """
-Part 2 network factory: loads the Part 1 baseline, adds pair-based STDP on
+STDP network factory: loads the circuit baseline, adds pair-based STDP on
 E->E synapses (Song, Miller & Abbott 2000), applies P/X/S pool rescaling, and
 adds 50 task-input neurons connected to both E and I populations.
 
-See docs/superpowers/specs/2026-06-10-part2-stdp-task-design.md for the full
-design and parameter justifications.
+See docs/superpowers/specs/2026-06-10-stdp-center-out-task-design.md for the
+full design and parameter justifications.
 """
 
 import h5py
@@ -16,10 +16,10 @@ from brian2 import (
     second, amp, Hz,
 )
 
-from part1.network import build_network, DEFAULT_PARAMS, _lognormal_weights
+from circuit.network import build_network, DEFAULT_PARAMS, _lognormal_weights
 
 
-DEFAULT_PARAMS_PART2 = {
+DEFAULT_PARAMS_PLASTICITY = {
     # Subpopulation sizes (E neuron indices: P=[0,P_size), X=[P_size,P_size+X_size),
     # S=[P_size+X_size, N_exc)). Must satisfy P_size + X_size <= N_exc.
     'P_size': 350,
@@ -88,9 +88,9 @@ def apply_pool_rescaling(i, j, w, p_cross, P_size, X_size):
     return w_new
 
 
-def load_part1_baseline(h5_path, params, seed=42):
+def load_baseline(h5_path, params, seed=42):
     """
-    Rebuild the Part 1 network and overwrite weights from the saved HDF5.
+    Rebuild the circuit network and overwrite weights from the saved HDF5.
 
     build_network(params, seed=seed) is fully deterministic (Brian2's RNG and
     the numpy weight-init RNG are both seeded), so it reproduces the same
@@ -99,7 +99,7 @@ def load_part1_baseline(h5_path, params, seed=42):
     1. Assert the reproduced (i, j) connectivity matches the saved (row, col)
        COO indices for all four synapse groups — a sanity check that `params`
        and `seed` match what produced the saved file.
-    2. Overwrite `.w` from the saved `data` arrays directly, so Part 2 starts
+    2. Overwrite `.w` from the saved `data` arrays directly, so training starts
        from the exact validated weights regardless of any future
        floating-point/library-version drift in step 1.
 
@@ -119,7 +119,7 @@ def load_part1_baseline(h5_path, params, seed=42):
             saved_data = f[f'weights/{name}/data'][:]
 
             # .j = postsynaptic (row), .i = presynaptic (col) — matches the
-            # convention in part1/run_part1.py's save_baseline().
+            # convention in circuit/run_baseline.py's save_baseline().
             actual_row = np.array(syn.j[:], dtype=np.int32)
             actual_col = np.array(syn.i[:], dtype=np.int32)
 
@@ -144,7 +144,7 @@ def build_stdp_network(net_objs, params, p_cross, seed=42):
     and I populations (spec 2.3).
 
     Returns an updated net_objs dict: same keys as build_network()/
-    load_part1_baseline(), with 'syn_EE' replaced by the STDP group, plus
+    load_baseline(), with 'syn_EE' replaced by the STDP group, plus
     'input_group', 'syn_input_E', 'syn_input_I', 'spike_input' added, and a
     fresh Network() containing all active components. The original syn_EE
     (and the Network it was part of) is left intact but unused.
@@ -157,13 +157,13 @@ def build_stdp_network(net_objs, params, p_cross, seed=42):
     j_arr = np.array(old_syn_EE.j[:], dtype=np.int32)
     w_arr = np.array(old_syn_EE.w[:] / amp, dtype=np.float64)
 
-    # Part 1's lognormal W_EE is unbounded, but the STDP on_pre/on_post
+    # The circuit's lognormal W_EE is unbounded, but the STDP on_pre/on_post
     # clip(..., 0, w_max) below applies on every spike regardless of
     # `plastic` -- a synapse with w > w_max would be silently clamped to
     # w_max on its first spike (even during the frozen burn-in). Clip here,
     # before pool rescaling, so initial weights don't depend on burn-in
     # spike timing and the seeded/control cross-pool ratio is exactly
-    # p_cross even for synapses whose Part 1 weight exceeded w_max.
+    # p_cross even for synapses whose baseline weight exceeded w_max.
     w_arr = np.clip(w_arr, 0.0, p['w_max'])
 
     w_rescaled = apply_pool_rescaling(

@@ -1,4 +1,4 @@
-# part1/network.py
+# circuit/network.py
 
 """
 Shared network factory for the Hebbian Plasticity / Manifold Sculptor project.
@@ -18,7 +18,7 @@ from brian2 import (
 )
 
 # Use the numpy backend to avoid C compilation overhead across repeated calls
-# (e.g., during the grid search in tune_part1.py).
+# (e.g., during the grid search in grid_search.py).
 prefs.codegen.target = 'numpy'
 
 DEFAULT_PARAMS = {
@@ -52,7 +52,8 @@ DEFAULT_PARAMS = {
     # STDP headroom: with g_EI=0.090, w_EE can grow ~29% before CV drops below 0.8
     #   (soft boundary at g_eff=0.070 nA). Hard oscillatory boundary is ~55% away.
     #   2× headroom is architecturally impossible in this network (80 inputs/neuron
-    #   + diffusion regime); weight normalization in Part 2 is the primary protection.
+    #   + diffusion regime); weight normalization during STDP training is the
+    #   primary protection.
     'g_EI':     0.090e-9,   # A    mean I→E inhibitory weight (1.5× w_mean_EE)
     'nu_ext':   7.0,        # Hz   background Poisson rate per neuron (> threshold)
     'w_scale_II': 0.50,     #      I→I mean = 0.50× g_EI

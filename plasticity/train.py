@@ -1,8 +1,8 @@
-# part2/run_part2.py
+# plasticity/train.py
 
 """
-Part 2 trial runner, burn-in/training loop, and CLI entry point (spec
-sections 2.3-6).
+Trial runner, burn-in/training loop, and CLI entry point for STDP +
+center-out task training (spec sections 2.3-6).
 """
 
 import argparse
@@ -11,20 +11,20 @@ import os
 import numpy as np
 from brian2 import second, ms, amp, Hz, prefs, NeuronGroup, Network
 
-from part1.network import DEFAULT_PARAMS
-from part1.run_part1 import compute_cv_isi
-from part2.network_part2 import (
-    DEFAULT_PARAMS_PART2,
-    load_part1_baseline,
+from circuit.network import DEFAULT_PARAMS
+from circuit.run_baseline import compute_cv_isi
+from plasticity.stdp_network import (
+    DEFAULT_PARAMS_PLASTICITY,
+    load_baseline,
     build_stdp_network,
 )
-from part2.task import (
+from plasticity.center_out_task import (
     rates_for_phase,
     assign_preferred_directions,
     generate_trial_sequence,
     generate_test_trial_sequence,
 )
-from part2.snapshot import save_snapshot, copy_part1_provenance, save_part2_params
+from plasticity.snapshot import save_snapshot, copy_baseline_provenance, save_training_params
 
 
 def run_one_trial(net_objs, params, theta_i, theta_cue):
@@ -140,7 +140,7 @@ def run_snapshot(net_objs, h5_path, epoch, test_trial_sequence, theta_i, params,
     """
     Snapshot protocol (spec 2.4):
     1. Freeze STDP (plastic=0).
-    2. Run the fixed test_trial_sequence (40 trials for Phase A: 5/direction).
+    2. Run the fixed test_trial_sequence (40 trials: 5/direction).
     3. Record W_EE (COO) and spike data, save to h5_path.
     4. Unfreeze STDP (plastic=1).
     5. Print a one-line summary and, if check_abort, check abort criteria.
@@ -168,7 +168,7 @@ def run_snapshot(net_objs, h5_path, epoch, test_trial_sequence, theta_i, params,
     w_arr = np.array(syn.w[:] / amp, dtype=np.float32)
     W_EE_coo = {
         'data': w_arr,
-        'row': j_arr,   # postsynaptic — matches part1 save_baseline convention
+        'row': j_arr,   # postsynaptic — matches circuit/run_baseline.py's save_baseline convention
         'col': i_arr,   # presynaptic
         'shape': np.array([params['N_exc'], params['N_exc']], dtype=np.int32),
     }
@@ -190,10 +190,10 @@ def _select_codegen_backend():
     """
     Switch Brian2 to the cython backend for the full validation run (Task 7
     is ~30x slower on numpy). Must be called AFTER importing from
-    part1.network, which sets prefs.codegen.target = 'numpy' at import time
-    (see part1/network.py module-level prefs assignment).
+    circuit.network, which sets prefs.codegen.target = 'numpy' at import time
+    (see circuit/network.py module-level prefs assignment).
 
-    Must ALSO be called AFTER load_part1_baseline()/build_network(): their
+    Must ALSO be called AFTER load_baseline()/build_network(): their
     `.connect(p=...)` calls and `rand()`-based v init execute immediately
     under whatever codegen target is active, and Brian2's RNG-consumption
     pattern for those calls differs between 'numpy' and 'cython' even with
@@ -264,25 +264,25 @@ def run_condition(net_objs, params, h5_path, theta_i, n_per_direction, snapshot_
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Part 2 Phase A: STDP + 8-direction center-out task")
+        description="STDP + 8-direction center-out task: training run")
     parser.add_argument('--condition', choices=['seeded', 'control'], required=True,
                          help="seeded: p_cross=0.2 (P/X pool seeding); "
                               "control: p_cross=1.0 (uniform initialization)")
     parser.add_argument('--n_per_direction', type=int, default=13,
                          help="Training trials per direction (default 13 -> "
-                              "104 total, Phase A scope)")
+                              "104 total)")
     parser.add_argument('--snapshot_epochs', type=int, nargs='+', default=[0, 50, 100],
                          help="Cumulative trial counts at which to snapshot")
     # Must match the seed baseline_network.h5 was generated with (seed=7,
-    # see part1/results/baseline_network.h5:/validation/seed) so
-    # load_part1_baseline()'s connectivity check passes.
+    # see circuit/results/baseline_network.h5:/validation/seed) so
+    # load_baseline()'s connectivity check passes.
     parser.add_argument('--seed', type=int, default=7)
     parser.add_argument('--baseline_h5', type=str,
-                         default='part1/results/baseline_network.h5')
-    parser.add_argument('--results_dir', type=str, default='part2/results')
+                         default='circuit/results/baseline_network.h5')
+    parser.add_argument('--results_dir', type=str, default='plasticity/results')
     args = parser.parse_args()
 
-    params = {**DEFAULT_PARAMS, **DEFAULT_PARAMS_PART2}
+    params = {**DEFAULT_PARAMS, **DEFAULT_PARAMS_PLASTICITY}
     p_cross = (params['p_cross_seeded'] if args.condition == 'seeded'
                else params['p_cross_control'])
 
@@ -291,17 +291,17 @@ def main():
     if os.path.exists(h5_path):
         os.remove(h5_path)
 
-    # Self-contained output file (spec section 6): provenance from Part 1,
-    # plus this run's STDP/task parameters.
-    copy_part1_provenance(h5_path, args.baseline_h5)
-    save_part2_params(h5_path, params, p_cross=p_cross, seed=args.seed)
+    # Self-contained output file (spec section 6): provenance from the
+    # circuit baseline, plus this run's STDP/task parameters.
+    copy_baseline_provenance(h5_path, args.baseline_h5)
+    save_training_params(h5_path, params, p_cross=p_cross, seed=args.seed)
 
-    net_objs = load_part1_baseline(args.baseline_h5, params, seed=args.seed)
+    net_objs = load_baseline(args.baseline_h5, params, seed=args.seed)
     net_objs = build_stdp_network(net_objs, params, p_cross=p_cross, seed=args.seed)
     theta_i = assign_preferred_directions(params['n_input'], params['n_directions'])
 
     # Codegen target is selected only after the network is fully built (see
-    # _select_codegen_backend's docstring) so that load_part1_baseline()'s
+    # _select_codegen_backend's docstring) so that load_baseline()'s
     # connectivity reproduction matches baseline_network.h5 exactly.
     _select_codegen_backend()
 

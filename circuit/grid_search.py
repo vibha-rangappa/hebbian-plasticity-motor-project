@@ -1,17 +1,18 @@
-# part1/tune_part1.py
+# circuit/grid_search.py
 
 """
-2D parameter grid search to find the AI-regime operating point for Part 1.
+2D parameter grid search to find the AI-regime operating point for the
+balanced E/I circuit.
 
 Scans (nu_ext, g_EI) over a 5×6 grid (30 points), running a 1 s simulation
 per point. Saves results to CSV and a two-panel heatmap.
 
 Usage:
-    python part1/tune_part1.py
-    # → inspect part1/results/tuning_heatmap.png
+    python circuit/grid_search.py
+    # → inspect circuit/results/tuning_heatmap.png
     # → pick (nu_ext, g_EI) from the overlap region where:
     #       mean_rate_E in [2, 10] Hz  AND  mean_CV_ISI in [0.8, 1.2]
-    # → run: python part1/run_part1.py --nu_ext <value> --g_EI <value>
+    # → run: python circuit/run_baseline.py --nu_ext <value> --g_EI <value>
 """
 
 import os
@@ -24,8 +25,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from brian2 import second
 
-from part1.network import build_network, DEFAULT_PARAMS
-from part1.run_part1 import compute_cv_isi, _extract_spike_trains
+from circuit.network import build_network, DEFAULT_PARAMS
+from circuit.run_baseline import compute_cv_isi, _extract_spike_trains
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), 'results')
 
@@ -170,7 +171,7 @@ def main():
 
     print('\nNext step: inspect tuning_heatmap.png, find the overlap region '
           'where rate ∈ [2,10] Hz AND CV ∈ [0.8,1.2], then run:')
-    print('  python part1/run_part1.py --nu_ext <value> --g_EI <value>')
+    print('  python circuit/run_baseline.py --nu_ext <value> --g_EI <value>')
 
 
 if __name__ == '__main__':

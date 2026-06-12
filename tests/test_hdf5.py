@@ -7,8 +7,8 @@ import scipy.sparse
 import pytest
 from brian2 import start_scope, second
 
-from part1.network import build_network, DEFAULT_PARAMS
-from part1.run_part1 import save_baseline
+from circuit.network import build_network, DEFAULT_PARAMS
+from circuit.run_baseline import save_baseline
 
 
 @pytest.fixture

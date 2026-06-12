@@ -1,12 +1,12 @@
-# part2/snapshot.py
+# plasticity/snapshot.py
 
 """
-HDF5 read/write for Part 2 training snapshots (spec section 6).
+HDF5 read/write for STDP training snapshots (spec section 6).
 
 Schema:
-    /network, /weights, /validation    — copied from the Part 1 baseline via
-        copy_part1_provenance(), so each output file is self-contained
-    /part2_params                      — attrs written by save_part2_params():
+    /network, /weights, /validation    — copied from the circuit baseline via
+        copy_baseline_provenance(), so each output file is self-contained
+    /training_params                   — attrs written by save_training_params():
         p_cross, seed, tau_plus, tau_minus, A_plus, A_minus, w_max, n_input,
         r_max, t_burn_in
     /snapshots/epoch_{N}/
@@ -32,7 +32,8 @@ def save_snapshot(h5_path, epoch, W_EE_coo, spike_data, trial_labels, monitoring
     Append one training snapshot to h5_path (created if it doesn't exist).
 
     W_EE_coo : dict with 'data' (amps), 'row' (postsynaptic idx), 'col'
-        (presynaptic idx), 'shape' — same convention as part1's save_baseline.
+        (presynaptic idx), 'shape' — same convention as circuit/run_baseline.py's
+        save_baseline.
     spike_data : dict with 'spike_times_ms', 'spike_neuron_idx', 'spike_trial_idx'.
     trial_labels : array of direction indices (0..n_directions-1), one per
         test trial.
@@ -103,10 +104,10 @@ def load_monitoring(h5_path):
         return {k: mgrp[k][:] for k in mgrp.keys()}
 
 
-def copy_part1_provenance(h5_path, baseline_h5_path):
+def copy_baseline_provenance(h5_path, baseline_h5_path):
     """
-    Copy /network, /weights, /validation from the Part 1 baseline into
-    h5_path, so each Part 2 output file is self-contained (spec section 6).
+    Copy /network, /weights, /validation from the circuit baseline into
+    h5_path, so each training output file is self-contained (spec section 6).
     Call once per file, before any snapshots are saved.
     """
     with h5py.File(baseline_h5_path, 'r') as src, h5py.File(h5_path, 'a') as dst:
@@ -114,13 +115,13 @@ def copy_part1_provenance(h5_path, baseline_h5_path):
             src.copy(src[group_name], dst, group_name)
 
 
-def save_part2_params(h5_path, params, p_cross, seed):
+def save_training_params(h5_path, params, p_cross, seed):
     """
-    Write /part2_params attrs (spec section 6): p_cross, STDP params, task
+    Write /training_params attrs (spec section 6): p_cross, STDP params, task
     input params, the trial-sequence seed, and burn-in duration.
     """
     with h5py.File(h5_path, 'a') as f:
-        grp = f.require_group('part2_params')
+        grp = f.require_group('training_params')
         grp.attrs['p_cross'] = float(p_cross)
         grp.attrs['seed'] = int(seed)
         for k in ('tau_plus', 'tau_minus', 'A_plus', 'A_minus', 'w_max',

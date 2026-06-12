@@ -1,4 +1,4 @@
-# tests/test_network_part2.py
+# tests/test_stdp_network.py
 
 import os
 
@@ -7,11 +7,11 @@ import pytest
 import h5py
 from brian2 import start_scope, second, amp, Hz
 
-from part1.network import build_network, DEFAULT_PARAMS
-from part2.network_part2 import (
-    DEFAULT_PARAMS_PART2,
+from circuit.network import build_network, DEFAULT_PARAMS
+from plasticity.stdp_network import (
+    DEFAULT_PARAMS_PLASTICITY,
     apply_pool_rescaling,
-    load_part1_baseline,
+    load_baseline,
     build_stdp_network,
 )
 
@@ -46,19 +46,19 @@ def test_apply_pool_rescaling_does_not_mutate_input():
 
 
 BASELINE_H5 = os.path.join(
-    os.path.dirname(__file__), '..', 'part1', 'results', 'baseline_network.h5')
+    os.path.dirname(__file__), '..', 'circuit', 'results', 'baseline_network.h5')
 
 
 # The saved baseline_network.h5 was generated with seed=7 (see
-# part1/results/baseline_network.h5:/validation/seed). build_network() is
+# circuit/results/baseline_network.h5:/validation/seed). build_network() is
 # deterministic given (params, seed), so seed=7 is required to reproduce its
 # connectivity exactly.
 BASELINE_SEED = 7
 
 
-def test_load_part1_baseline_matches_saved_weights():
+def test_load_baseline_matches_saved_weights():
     start_scope()
-    net_objs = load_part1_baseline(BASELINE_H5, DEFAULT_PARAMS, seed=BASELINE_SEED)
+    net_objs = load_baseline(BASELINE_H5, DEFAULT_PARAMS, seed=BASELINE_SEED)
 
     with h5py.File(BASELINE_H5, 'r') as f:
         saved_w = f['weights/W_EE/data'][:]
@@ -67,9 +67,9 @@ def test_load_part1_baseline_matches_saved_weights():
     np.testing.assert_allclose(actual_w, saved_w, rtol=1e-5)
 
 
-def test_load_part1_baseline_returns_expected_keys():
+def test_load_baseline_returns_expected_keys():
     start_scope()
-    net_objs = load_part1_baseline(BASELINE_H5, DEFAULT_PARAMS, seed=BASELINE_SEED)
+    net_objs = load_baseline(BASELINE_H5, DEFAULT_PARAMS, seed=BASELINE_SEED)
     expected = {
         'exc', 'inh', 'syn_EE', 'syn_EI', 'syn_IE', 'syn_II',
         'drive_E', 'drive_I', 'spike_E', 'spike_I', 'net',
@@ -77,17 +77,17 @@ def test_load_part1_baseline_returns_expected_keys():
     assert expected.issubset(net_objs.keys())
 
 
-def test_load_part1_baseline_raises_on_mismatched_params():
+def test_load_baseline_raises_on_mismatched_params():
     start_scope()
     bad_params = {**DEFAULT_PARAMS, 'N_exc': 10}
     with pytest.raises(ValueError):
-        load_part1_baseline(BASELINE_H5, bad_params, seed=42)
+        load_baseline(BASELINE_H5, bad_params, seed=42)
 
 
 def _small_params(**overrides):
     """20 E + 5 I neurons, P=[0,8), X=[8,16), S=[16,20)."""
     return {
-        **DEFAULT_PARAMS, **DEFAULT_PARAMS_PART2,
+        **DEFAULT_PARAMS, **DEFAULT_PARAMS_PLASTICITY,
         'N_exc': 20, 'N_inh': 5,
         'P_size': 8, 'X_size': 8,
         **overrides,
@@ -125,15 +125,15 @@ def test_build_stdp_network_applies_pool_rescaling():
 
 def test_build_stdp_network_clips_initial_weights_to_w_max():
     """
-    Part 1's lognormal W_EE is unbounded, but Part 2's w_max is enforced by
-    clip() on every STDP event regardless of `plastic` -- so a synapse with
-    w > w_max would get silently clamped to w_max on its first spike, even
-    during the frozen burn-in. build_stdp_network must clip inherited
-    weights to w_max BEFORE pool rescaling, so:
+    The circuit's lognormal W_EE is unbounded, but build_stdp_network's
+    w_max is enforced by clip() on every STDP event regardless of `plastic`
+    -- so a synapse with w > w_max would get silently clamped to w_max on
+    its first spike, even during the frozen burn-in. build_stdp_network must
+    clip inherited weights to w_max BEFORE pool rescaling, so:
       - initial weights are deterministic (don't depend on burn-in spike
         timing), and
       - the seeded/control cross-pool ratio is exactly p_cross even for
-        synapses whose Part 1 weight exceeded w_max (0.2*w_max for seeded
+        synapses whose baseline weight exceeded w_max (0.2*w_max for seeded
         vs w_max for control => ratio 0.2, not something else).
     """
     start_scope()
@@ -150,7 +150,7 @@ def test_build_stdp_network_clips_initial_weights_to_w_max():
     cross_idx = np.where((in_P & j_in_X) | (in_X & j_in_P))[0][0]
 
     w = np.array(syn.w[:] / amp)
-    w[cross_idx] = small['w_max'] * 1.5  # above w_max, as Part 1 init can produce
+    w[cross_idx] = small['w_max'] * 1.5  # above w_max, as the baseline init can produce
     syn.w = w * amp
 
     result = build_stdp_network(net_objs, small, p_cross=0.2, seed=1)

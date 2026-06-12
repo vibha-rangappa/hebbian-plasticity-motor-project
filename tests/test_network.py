@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from brian2 import start_scope, second
 
-from part1.network import build_network, DEFAULT_PARAMS
+from circuit.network import build_network, DEFAULT_PARAMS
 
 
 def test_build_network_returns_required_keys():

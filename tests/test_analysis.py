@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from part1.run_part1 import compute_cv_isi, compute_pairwise_corr, compute_power_spectrum
+from circuit.run_baseline import compute_cv_isi, compute_pairwise_corr, compute_power_spectrum
 
 
 def _make_poisson_trains(n_neurons: int, rate_hz: float, t_end: float, seed: int) -> dict:

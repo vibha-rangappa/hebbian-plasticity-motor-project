@@ -1,17 +1,17 @@
-# tests/test_run_part2.py
+# tests/test_train.py
 
 import numpy as np
 import pytest
 from brian2 import start_scope, second, amp, Hz
 
-from part1.network import build_network, DEFAULT_PARAMS
-from part2.network_part2 import DEFAULT_PARAMS_PART2, build_stdp_network
-from part2.task import (
+from circuit.network import build_network, DEFAULT_PARAMS
+from plasticity.stdp_network import DEFAULT_PARAMS_PLASTICITY, build_stdp_network
+from plasticity.center_out_task import (
     assign_preferred_directions,
     generate_trial_sequence,
     generate_test_trial_sequence,
 )
-from part2.run_part2 import (
+from plasticity.train import (
     run_one_trial,
     extract_snapshot_spikes,
     compute_monitoring_metrics,
@@ -19,12 +19,12 @@ from part2.run_part2 import (
     run_snapshot,
     run_condition,
 )
-from part2.snapshot import load_snapshot, load_monitoring
+from plasticity.snapshot import load_snapshot, load_monitoring
 
 
 def _small_setup(nu_ext=1000.0, seed=1):
     small = {
-        **DEFAULT_PARAMS, **DEFAULT_PARAMS_PART2,
+        **DEFAULT_PARAMS, **DEFAULT_PARAMS_PLASTICITY,
         'N_exc': 20, 'N_inh': 5,
         'P_size': 8, 'X_size': 8,
         'nu_ext': nu_ext,

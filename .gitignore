@@ -1,6 +1,9 @@
-part1/results/
-part2/results/
+circuit/results/
+plasticity/results/
 __pycache__/
 *.pyc
 .pytest_cache/
 brian_objects/
+geometry/results/
+.DS_Store
+.claude/

@@ -1,20 +1,20 @@
-# Part 1 Tuning Notes: Getting the Network into the AI Regime
+# Circuit Tuning Notes: Getting the Network into the AI Regime
 
 ## What this document is
 
-A record of what was built, what didn't work and why, and what the final parameters mean. Written so future-you (or anyone picking up Part 2) can trace any unexpected result back to a decision made here.
+A record of what was built, what didn't work and why, and what the final parameters mean. Written so future-you (or anyone picking up the STDP/plasticity work) can trace any unexpected result back to a decision made here.
 
 ---
 
 ## What was built
 
-A 1000-neuron leaky integrate-and-fire (LIF) network in Brian2 with current-based exponential synapses, tuned to the asynchronous-irregular (AI) firing regime described by Brunel (2000). The deliverable is `part1/results/baseline_network.h5`, which stores the network's initial weight matrices and validated firing statistics. Part 2 will load this file and add STDP on top.
+A 1000-neuron leaky integrate-and-fire (LIF) network in Brian2 with current-based exponential synapses, tuned to the asynchronous-irregular (AI) firing regime described by Brunel (2000). The deliverable is `circuit/results/baseline_network.h5`, which stores the network's initial weight matrices and validated firing statistics. The STDP/plasticity work will load this file and add STDP on top.
 
 Files:
-- `part1/network.py` — network factory, `build_network()`, `DEFAULT_PARAMS`
-- `part1/run_part1.py` — 30-second validation run, saves HDF5 if all checks pass
-- `part1/tune_part1.py` — coarse 2D grid search (historical; parameters found by hand after this failed)
-- `part1/results/baseline_network.h5` — the output
+- `circuit/network.py` — network factory, `build_network()`, `DEFAULT_PARAMS`
+- `circuit/run_baseline.py` — 30-second validation run, saves HDF5 if all checks pass
+- `circuit/grid_search.py` — coarse 2D grid search (historical; parameters found by hand after this failed)
+- `circuit/results/baseline_network.h5` — the output
 
 ---
 
@@ -27,7 +27,7 @@ The goal was not just "neurons fire." It was specifically the *asynchronous-irre
 - **Pairwise spike-train correlation:** < 0.05. Neurons should fire independently, not in coordinated population bursts.
 - **I/E rate ratio:** I neurons fire faster than E neurons. The spec targeted 2–3×.
 
-These are not just aesthetic targets. For Part 2, STDP on a non-AI network either drives runaway potentiation (if E dominates) or silences the network (if I dominates). The AI regime is the operating condition where Hebbian plasticity can do something meaningful.
+These are not just aesthetic targets. STDP on a non-AI network either drives runaway potentiation (if E dominates) or silences the network (if I dominates). The AI regime is the operating condition where Hebbian plasticity can do something meaningful.
 
 ---
 
@@ -51,7 +51,7 @@ One implementation note on PoissonInput: Brian2's `N > 1` option shares a spike 
 
 ## What the coarse grid search found (and why it was wrong)
 
-The initial `tune_part1.py` scanned nu_ext ∈ [10, 60] Hz and g_EI ∈ [2, 8] × w_EE. Every point gave E rates of 0.2–1.6 Hz — far below target.
+The initial `grid_search.py` scanned nu_ext ∈ [10, 60] Hz and g_EI ∈ [2, 8] × w_EE. Every point gave E rates of 0.2–1.6 Hz — far below target.
 
 **Why:** At nu_ext = 10 Hz, the threshold rate for I neurons is:
 
@@ -127,13 +127,13 @@ The 2–3× target in the spec was based on Brunel's original parameterization w
 
 Biologically, 4× is not unreasonable — fast-spiking parvalbumin interneurons in cortex regularly fire 3–5× faster than pyramidal cells at rest.
 
-The `run_part1.py` I/E criterion was widened to 2–5× with a comment explaining this. If you want I/E ≈ 2–3, you'd need to either reduce w_EI below w_EE (make E→I synapses weaker than E→E) or provide separate background drive to E and I.
+The `run_baseline.py` I/E criterion was widened to 2–5× with a comment explaining this. If you want I/E ≈ 2–3, you'd need to either reduce w_EI below w_EE (make E→I synapses weaker than E→E) or provide separate background drive to E and I.
 
 ---
 
 ## Why the validation uses a 30-second run with a late-window check
 
-Early versions of `run_part1.py` ran for 5 seconds and measured metrics over [0, 5 s]. This gave misleadingly good-looking results because:
+Early versions of `run_baseline.py` ran for 5 seconds and measured metrics over [0, 5 s]. This gave misleadingly good-looking results because:
 
 1. The transient burst from random initial conditions inflates the E firing rate to 3–5 Hz in the first 5 seconds
 2. CV-ISI in the transient is ~0.75 — below the 0.8 target
@@ -168,14 +168,14 @@ For 2× headroom, you'd need g_EI_new / g_EI_lower_boundary = 2.0. At `nu_ext=7.
 - With g_EI=0.090, the soft headroom is `0.090/0.070 = 1.29×` (29% growth before CV exits the AI band) and the hard instability headroom is `0.090/0.055 ≈ 1.64×` (64% before runaway).
 - This is still not 2×, but it is meaningfully safer than the original 7%.
 
-**The mandatory Part 2 companion:** given that even the best available headroom (~29%) is below what typical STDP can produce over a long learning session, Part 2 must include per-neuron multiplicative weight normalization (synaptic scaling). After each STDP update, normalize each neuron's total incoming E→E weight so the sum stays constant. This bounds mean w_EE and makes the headroom question moot — only weight redistribution occurs, not mean drift.
+**The mandatory companion for STDP training:** given that even the best available headroom (~29%) is below what typical STDP can produce over a long learning session, the STDP training stage must include per-neuron multiplicative weight normalization (synaptic scaling). After each STDP update, normalize each neuron's total incoming E→E weight so the sum stays constant. This bounds mean w_EE and makes the headroom question moot — only weight redistribution occurs, not mean drift.
 
 ---
 
 ## Final parameters
 
 ```python
-# In part1/network.py DEFAULT_PARAMS:
+# In circuit/network.py DEFAULT_PARAMS:
 'nu_ext':     7.0,       # Hz   background rate (above 6.25 Hz threshold)
 'g_EI':       0.090e-9,  # A    mean I→E weight (1.5× w_mean_EE)
 'w_scale_II': 0.50,      #      I→I weight scale (half of I→E)
@@ -201,29 +201,29 @@ Robust across 4 random seeds (42, 0, 1, 7): all pass all four criteria.
 ## How to run the validation yourself
 
 ```bash
-PYTHONPATH=. python part1/run_part1.py \
+PYTHONPATH=. python circuit/run_baseline.py \
     --nu_ext 7.0 \
     --g_EI 0.090 \
     --w_scale_II 0.50 \
     --t_sim 30
 ```
 
-Expected output: all four checks PASS, `baseline_network.h5` written to `part1/results/`.
+Expected output: all four checks PASS, `baseline_network.h5` written to `circuit/results/`.
 
 To check with a different seed:
 
 ```bash
-PYTHONPATH=. python part1/run_part1.py \
+PYTHONPATH=. python circuit/run_baseline.py \
     --nu_ext 7.0 --g_EI 0.090 --w_scale_II 0.50 --t_sim 30 --seed 7
 ```
 
 ---
 
-## What to watch for in Part 2
+## What to watch for during STDP training
 
 The network sits at nu_E ≈ 2.4 Hz with no task structure. When you add STDP and a task signal:
 
 - **Weight normalization is required.** Without it, STDP will grow mean w_EE and push the network out of the AI corridor within ~29% growth (CV exits the 0.8 floor). Implement multiplicative weight normalization (normalize each neuron's total incoming E→E weight after each update) before any long learning runs.
 - **Rate increase under task drive:** Task-correlated inputs will push rates above baseline transiently. Monitor per-population rates; the 10 Hz upper bound is real but far from the 2.4 Hz baseline.
 - **CV change during learning:** As weights redistribute (not drift, with normalization), CV may decrease (stronger synapses drive more regular spike trains) or increase. Either direction is a meaningful read on the post-learning dynamics.
-- **Transient on load:** If Part 2 loads the HDF5 weights but reinitializes V randomly, you'll see the same 15-second transient. Initialize V at V_rest or burn in for 5 seconds before learning starts.
+- **Transient on load:** If the training script loads the HDF5 weights but reinitializes V randomly, you'll see the same 15-second transient. Initialize V at V_rest or burn in for 5 seconds before learning starts.

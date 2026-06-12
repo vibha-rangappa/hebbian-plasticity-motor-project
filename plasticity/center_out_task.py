@@ -1,9 +1,9 @@
-# part2/task.py
+# plasticity/center_out_task.py
 
 """
 Task structure for the 8-direction center-out reaching task (spec section 2.3).
 
-Pure numpy — no Brian2 dependency. run_part2.py converts the rate arrays
+Pure numpy — no Brian2 dependency. train.py converts the rate arrays
 returned here to Brian2 Quantities (`* Hz`) before assigning to the input
 PoissonGroup.
 """

@@ -1,10 +1,12 @@
-# part1/run_part1.py
+# circuit/run_baseline.py
 
 """
-Validation runner for Part 1 of the Hebbian Plasticity / Manifold Sculptor project.
+Validation runner for the balanced E/I circuit (Hebbian Plasticity / Manifold
+Sculptor project). Builds the network, runs a steady-state validation, and
+saves the baseline network state to HDF5.
 
 Usage:
-    python part1/run_part1.py --nu_ext 6.25 --g_EI 0.065 --w_scale_II 0.5
+    python circuit/run_baseline.py --nu_ext 6.25 --g_EI 0.065 --w_scale_II 0.5
 
 Runs a 30 s simulation (default), auto-evaluates checks 3, 4, 7 in the
 LAST 10 s window (steady state after transient decays), saves figures for
@@ -32,7 +34,7 @@ import scipy.sparse
 from scipy.ndimage import gaussian_filter1d
 from brian2 import second, amp
 
-from part1.network import build_network, DEFAULT_PARAMS
+from circuit.network import build_network, DEFAULT_PARAMS
 
 
 # ---------------------------------------------------------------------------
@@ -461,7 +463,7 @@ def run_validation(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Run Part 1 validation and save baseline network to HDF5.')
+        description='Validate the balanced E/I circuit and save baseline network to HDF5.')
     parser.add_argument('--nu_ext',     type=float, required=True,
                         help='Background Poisson rate (Hz)')
     parser.add_argument('--g_EI',       type=float, required=True,

@@ -1,10 +1,10 @@
-# tests/test_inspect_phase_a.py
+# tests/test_validate_training.py
 
 import numpy as np
 import pytest
 
-from part2.snapshot import save_snapshot, load_snapshot, load_monitoring
-from part2.inspect_phase_a import (
+from plasticity.snapshot import save_snapshot, load_snapshot, load_monitoring
+from plasticity.validate_training import (
     check_no_nans,
     check_monitoring_band,
     check_weight_movement,

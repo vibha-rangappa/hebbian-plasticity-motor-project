@@ -1,24 +1,24 @@
-# part2/inspect_phase_a.py
+# plasticity/validate_training.py
 
 """
-Phase A validation checks (spec section 7). Run after both conditions have
-completed:
+Post-training validation checks (spec section 7). Run after both conditions
+have completed:
 
-    PYTHONPATH=. python part2/run_part2.py --condition seeded
-    PYTHONPATH=. python part2/run_part2.py --condition control
-    PYTHONPATH=. python part2/inspect_phase_a.py
+    PYTHONPATH=. python plasticity/train.py --condition seeded
+    PYTHONPATH=. python plasticity/train.py --condition control
+    PYTHONPATH=. python plasticity/validate_training.py
 
 Each check_* function takes loaded snapshot/monitoring dicts (from
-part2.snapshot) and either returns None (pass) or raises AssertionError with
-a descriptive message.
+plasticity.snapshot) and either returns None (pass) or raises AssertionError
+with a descriptive message.
 """
 
 import sys
 
 import numpy as np
 
-from part2.network_part2 import DEFAULT_PARAMS_PART2
-from part2.snapshot import load_snapshot, load_monitoring
+from plasticity.stdp_network import DEFAULT_PARAMS_PLASTICITY
+from plasticity.snapshot import load_snapshot, load_monitoring
 
 
 def check_no_nans(snapshot, epoch):
@@ -61,7 +61,7 @@ def check_pool_rescaling(snap_seeded_epoch0, snap_control_epoch0, p_cross, P_siz
                           atol=1e-6):
     """
     At epoch 0, seeded and control W_EE should have identical connectivity
-    (row, col) -- both come from load_part1_baseline(seed=7) -- and differ
+    (row, col) -- both come from load_baseline(seed=7) -- and differ
     only on P<->X cross-pool synapses, by exactly a factor of p_cross
     (spec 2.2).
     """
@@ -72,7 +72,7 @@ def check_pool_rescaling(snap_seeded_epoch0, snap_control_epoch0, p_cross, P_siz
         "seeded and control W_EE have different connectivity at epoch 0 -- " \
         "did both conditions use the same seed?"
 
-    # row = postsynaptic, col = presynaptic (part1 save_baseline convention)
+    # row = postsynaptic, col = presynaptic (circuit/run_baseline.py's save_baseline convention)
     pre, post = col_s, row_s
     in_P_pre = pre < P_size
     in_X_pre = (pre >= P_size) & (pre < P_size + X_size)
@@ -90,12 +90,12 @@ def check_pool_rescaling(snap_seeded_epoch0, snap_control_epoch0, p_cross, P_siz
 
 
 def main():
-    params = DEFAULT_PARAMS_PART2
+    params = DEFAULT_PARAMS_PLASTICITY
     snapshot_epochs = (0, 50, 100)
 
     results = {}
     for condition in ('seeded', 'control'):
-        h5_path = f'part2/results/training_{condition}.h5'
+        h5_path = f'plasticity/results/training_{condition}.h5'
         monitoring = load_monitoring(h5_path)
         snapshots = {epoch: load_snapshot(h5_path, epoch) for epoch in snapshot_epochs}
         results[condition] = (monitoring, snapshots)
@@ -142,10 +142,10 @@ def main():
                   f"w_EE={w * 1e9:7.4f} nA  frac_w_max={frac:.3f}  cv_isi={cv:.3f}")
 
     if all_ok:
-        print("\nAll Phase A checks PASSED.")
+        print("\nAll checks PASSED.")
         return 0
     else:
-        print("\nSome Phase A checks FAILED -- see above.")
+        print("\nSome checks FAILED -- see above.")
         return 1
 
 
