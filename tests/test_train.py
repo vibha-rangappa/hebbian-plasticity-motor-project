@@ -175,6 +175,79 @@ def test_run_condition_small_network_writes_snapshots(tmp_path):
     np.testing.assert_array_equal(snap0['trial_labels'], short_test_sequence)
 
 
+def test_run_condition_frozen_leaves_weights_unchanged(tmp_path):
+    """Frozen control (plasticity_on=False): E->E weights identical across the run,
+    despite heavy spiking (nu_ext=1000) that would change them if STDP were on."""
+    start_scope()
+    net_objs, small, theta_i = _small_setup()
+    small = {**small, 't_burn_in': 0.1}
+    h5_path = str(tmp_path / "frozen.h5")
+    seq = generate_test_trial_sequence(n_per_direction=1, n_directions=small['n_directions'])
+
+    run_condition(net_objs, small, h5_path, theta_i, n_per_direction=1,
+                  snapshot_epochs={0, 8}, seed=1, condition_name='frozen',
+                  check_abort=False, test_trial_sequence=seq, plasticity_on=False)
+
+    snap0 = load_snapshot(h5_path, epoch=0)
+    snap8 = load_snapshot(h5_path, epoch=8)
+    np.testing.assert_array_equal(snap0['W_EE_coo']['data'], snap8['W_EE_coo']['data'])
+
+
+def test_run_condition_plastic_changes_weights(tmp_path):
+    """Contrast to the frozen control: with plasticity on, weights move over training."""
+    start_scope()
+    net_objs, small, theta_i = _small_setup()
+    small = {**small, 't_burn_in': 0.1}
+    h5_path = str(tmp_path / "plastic.h5")
+    seq = generate_test_trial_sequence(n_per_direction=1, n_directions=small['n_directions'])
+
+    run_condition(net_objs, small, h5_path, theta_i, n_per_direction=1,
+                  snapshot_epochs={0, 8}, seed=1, condition_name='plastic',
+                  check_abort=False, test_trial_sequence=seq, plasticity_on=True)
+
+    snap0 = load_snapshot(h5_path, epoch=0)
+    snap8 = load_snapshot(h5_path, epoch=8)
+    assert not np.allclose(snap0['W_EE_coo']['data'], snap8['W_EE_coo']['data'], atol=0)
+
+
+def test_weight_norm_prevents_insum_inflation(tmp_path):
+    """With synaptic scaling on, no neuron's incoming E->E sum exceeds its baseline
+    target after training -- the homeostatic guarantee that stops runaway potentiation."""
+    start_scope()
+    net_objs, small, theta_i = _small_setup()
+    small = {**small, 't_burn_in': 0.1}
+    h5_path = str(tmp_path / "norm.h5")
+    seq = generate_test_trial_sequence(n_per_direction=1, n_directions=small['n_directions'])
+
+    run_condition(net_objs, small, h5_path, theta_i, n_per_direction=1,
+                  snapshot_epochs=set(), seed=1, condition_name='norm',
+                  check_abort=False, test_trial_sequence=seq,
+                  plasticity_on=True, weight_norm=True)
+
+    syn = net_objs['syn_EE']
+    post = np.asarray(syn.j[:])
+    w = np.asarray(syn.w[:] / amp)
+    insum = np.bincount(post, weights=w, minlength=small['N_exc'])
+    target = net_objs['W_target_EE']
+    has = target > 0
+    # Scale-then-clip can only hold-or-lower the sum, never inflate it.
+    assert np.all(insum[has] <= target[has] * (1.0 + 1e-6))
+    # And it should be close to target (not collapsed to ~0).
+    assert np.median(insum[has] / target[has]) > 0.8
+
+
+def test_build_stdp_network_exposes_weight_target():
+    start_scope()
+    net_objs, small, theta_i = _small_setup()
+    assert 'W_target_EE' in net_objs
+    # Target equals the initial per-post incoming-weight sum.
+    syn = net_objs['syn_EE']
+    post = np.asarray(syn.j[:])
+    w0 = np.asarray(syn.w[:] / amp)
+    insum0 = np.bincount(post, weights=w0, minlength=small['N_exc'])
+    np.testing.assert_allclose(net_objs['W_target_EE'], insum0, rtol=1e-6)
+
+
 def test_run_condition_runs_correct_number_of_training_trials():
     start_scope()
     net_objs, small, theta_i = _small_setup()

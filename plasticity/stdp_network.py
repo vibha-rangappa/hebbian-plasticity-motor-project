@@ -137,6 +137,47 @@ def load_baseline(h5_path, params, seed=42):
     return net_objs
 
 
+def compute_target_insums(j_arr, w, n_exc):
+    """
+    Per-postsynaptic-neuron sum of incoming E->E weights: target[j] = sum of w over
+    synapses whose postsynaptic index is j. Captured once at build time and held fixed
+    as the normalization target.
+    """
+    return np.bincount(np.asarray(j_arr), weights=np.asarray(w, dtype=np.float64),
+                       minlength=n_exc)
+
+
+def rescale_to_target(post, w, target, w_max):
+    """
+    Multiplicative synaptic scaling (pure numpy core). For each postsynaptic neuron,
+    rescale its incoming weights so they sum to target[j], then clip to [0, w_max].
+
+    Multiplicative (not subtractive) so the *relative* weight pattern STDP learned is
+    preserved while the per-neuron total is held constant (Turrigiano-style scaling).
+    This converts STDP from mean-weight drift (which drove the runaway we observed) into
+    pure redistribution, keeping the network at its balanced AI operating point.
+
+    Neurons whose current incoming sum is 0 are left untouched (factor 1).
+    Order: scale, then clip -- clipping can leave a neuron's sum slightly below target
+    (only when a weight hits w_max), an acceptable small drift.
+    """
+    post = np.asarray(post)
+    w = np.asarray(w, dtype=np.float64)
+    n = len(target)
+    cur = np.bincount(post, weights=w, minlength=n)
+    factor = np.ones(n)
+    nz = cur > 0
+    factor[nz] = target[nz] / cur[nz]
+    return np.clip(w * factor[post], 0.0, w_max)
+
+
+def normalize_incoming_weights(syn, target, w_max):
+    """Apply rescale_to_target in place to a Brian2 E->E synapse group (weights in amp)."""
+    post = np.asarray(syn.j[:])
+    w = np.asarray(syn.w[:] / amp)
+    syn.w = rescale_to_target(post, w, target, w_max) * amp
+
+
 def build_stdp_network(net_objs, params, p_cross, seed=42):
     """
     Replace syn_EE with a plastic STDP synapse group (pool-rescaled initial
@@ -250,6 +291,10 @@ def build_stdp_network(net_objs, params, p_cross, seed=42):
 
     result = dict(net_objs)
     result['syn_EE'] = syn_EE_stdp
+    # Per-postsynaptic-neuron target incoming-weight sum, captured from the initial
+    # (rescaled, clipped) weights. Held fixed as the synaptic-scaling target so STDP
+    # redistributes rather than inflates each neuron's total excitatory drive.
+    result['W_target_EE'] = compute_target_insums(j_arr, w_rescaled, p['N_exc'])
     result['input_group'] = input_group
     result['syn_input_E'] = syn_input_E
     result['syn_input_I'] = syn_input_I

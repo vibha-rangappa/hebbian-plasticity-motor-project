@@ -17,6 +17,7 @@ from plasticity.stdp_network import (
     DEFAULT_PARAMS_PLASTICITY,
     load_baseline,
     build_stdp_network,
+    normalize_incoming_weights,
 )
 from plasticity.center_out_task import (
     rates_for_phase,
@@ -41,6 +42,7 @@ def run_one_trial(net_objs, params, theta_i, theta_cue):
             r_max=params['r_max'],
             r_background=params['r_background'],
             exec_amplification=params['exec_amplification'],
+            exec_mode=params.get('exec_mode', 'sustained'),
         )
         net_objs['input_group'].rates = rates * Hz
         net_objs['net'].run(params[f't_{phase}'] * second)
@@ -142,7 +144,8 @@ def run_snapshot(net_objs, h5_path, epoch, test_trial_sequence, theta_i, params,
     1. Freeze STDP (plastic=0).
     2. Run the fixed test_trial_sequence (40 trials: 5/direction).
     3. Record W_EE (COO) and spike data, save to h5_path.
-    4. Unfreeze STDP (plastic=1).
+    4. Restore the prior plastic state (1 for a normal run, 0 for a frozen
+       control — so a frozen run stays frozen throughout).
     5. Print a one-line summary and, if check_abort, check abort criteria.
 
     check_abort=False is for tests that use an unrealistic nu_ext to
@@ -151,6 +154,8 @@ def run_snapshot(net_objs, h5_path, epoch, test_trial_sequence, theta_i, params,
     meaning anything for the real (validated) network run by run_condition().
     """
     syn = net_objs['syn_EE']
+    # `plastic` is a shared (scalar) synaptic variable, so plastic[:] is 0-dimensional.
+    prev_plastic = int(np.asarray(syn.plastic[:]))
     syn.plastic = 0
 
     t_snapshot_start = net_objs['net'].t / second
@@ -175,7 +180,7 @@ def run_snapshot(net_objs, h5_path, epoch, test_trial_sequence, theta_i, params,
 
     save_snapshot(h5_path, epoch, W_EE_coo, spike_data, test_trial_sequence, metrics)
 
-    syn.plastic = 1
+    syn.plastic = prev_plastic
 
     print(f"[epoch {epoch:5d}] mean_rate_E={metrics['mean_rate_E']:6.2f} Hz  "
           f"mean_w_EE={metrics['mean_w_EE'] * 1e9:7.4f} nA  "
@@ -214,7 +219,8 @@ def _select_codegen_backend():
 
 
 def run_condition(net_objs, params, h5_path, theta_i, n_per_direction, snapshot_epochs,
-                   seed=42, condition_name='', check_abort=True, test_trial_sequence=None):
+                   seed=42, condition_name='', check_abort=True, test_trial_sequence=None,
+                   plasticity_on=True, weight_norm=True):
     """
     Burn-in, epoch-0 snapshot, then the training loop with periodic snapshots
     (spec sections 3-4).
@@ -239,7 +245,9 @@ def run_condition(net_objs, params, h5_path, theta_i, n_per_direction, snapshot_
     syn.plastic = 0
     net_objs['input_group'].rates = np.full(params['n_input'], params['r_background']) * Hz
     net_objs['net'].run(params['t_burn_in'] * second)
-    syn.plastic = 1
+    # Frozen control (plasticity_on=False, spec Control A): leave STDP off for the
+    # whole run, isolating geometry from network structure alone.
+    syn.plastic = 1 if plasticity_on else 0
 
     # --- Epoch-0 snapshot (before any training trial)
     if 0 in snapshot_epochs:
@@ -248,10 +256,19 @@ def run_condition(net_objs, params, h5_path, theta_i, n_per_direction, snapshot_
                       theta_i=theta_i, params=params, check_abort=check_abort)
 
     # --- Training loop
+    apply_norm = weight_norm and plasticity_on and 'W_target_EE' in net_objs
     for trial_idx in range(n_trials):
         direction_idx = trial_sequence[trial_idx]
         theta_cue = 2 * np.pi * direction_idx / params['n_directions']
         run_one_trial(net_objs, params, theta_i, theta_cue)
+
+        # Multiplicative synaptic scaling after each trial (the mandatory homeostatic
+        # companion to additive STDP): holds each neuron's total incoming E->E weight at
+        # its baseline, so STDP redistributes rather than inflates -- keeping the network
+        # in the AI regime instead of running away (rate climbed 1.86->9.6 Hz without it).
+        if apply_norm:
+            normalize_incoming_weights(net_objs['syn_EE'], net_objs['W_target_EE'],
+                                       params['w_max'])
 
         completed = trial_idx + 1
         if completed in snapshot_epochs:
@@ -265,9 +282,21 @@ def run_condition(net_objs, params, h5_path, theta_i, n_per_direction, snapshot_
 def main():
     parser = argparse.ArgumentParser(
         description="STDP + 8-direction center-out task: training run")
-    parser.add_argument('--condition', choices=['seeded', 'control'], required=True,
-                         help="seeded: p_cross=0.2 (P/X pool seeding); "
-                              "control: p_cross=1.0 (uniform initialization)")
+    parser.add_argument('--condition', choices=['seeded', 'control', 'frozen'],
+                         required=True,
+                         help="seeded: p_cross=0.2, STDP on; "
+                              "control: p_cross=1.0, STDP on; "
+                              "frozen: p_cross=0.2, STDP off (Control A, the matched "
+                              "structural control for seeded)")
+    parser.add_argument('--exec_mode', choices=['sustained', 'autonomous'],
+                         default='sustained',
+                         help="sustained: exec input clamps the state (default); "
+                              "autonomous: exec input withdrawn, network evolves freely "
+                              "from the prep-set initial condition")
+    parser.add_argument('--weight_norm', choices=['on', 'off'], default='on',
+                         help="on (default): multiplicative synaptic scaling after each "
+                              "trial holds total incoming E->E weight constant, keeping "
+                              "the network in the AI regime; off: raw additive STDP")
     parser.add_argument('--n_per_direction', type=int, default=13,
                          help="Training trials per direction (default 13 -> "
                               "104 total)")
@@ -283,8 +312,14 @@ def main():
     args = parser.parse_args()
 
     params = {**DEFAULT_PARAMS, **DEFAULT_PARAMS_PLASTICITY}
-    p_cross = (params['p_cross_seeded'] if args.condition == 'seeded'
-               else params['p_cross_control'])
+    params['exec_mode'] = args.exec_mode
+    # control uses uniform init (p_cross=1.0); seeded and the frozen structural
+    # control share the seeded init (p_cross=0.2) so frozen controls for seeded.
+    p_cross = (params['p_cross_control'] if args.condition == 'control'
+               else params['p_cross_seeded'])
+    plasticity_on = (args.condition != 'frozen')
+    weight_norm = (args.weight_norm == 'on')
+    params['weight_norm'] = weight_norm
 
     os.makedirs(args.results_dir, exist_ok=True)
     h5_path = os.path.join(args.results_dir, f'training_{args.condition}.h5')
@@ -294,7 +329,8 @@ def main():
     # Self-contained output file (spec section 6): provenance from the
     # circuit baseline, plus this run's STDP/task parameters.
     copy_baseline_provenance(h5_path, args.baseline_h5)
-    save_training_params(h5_path, params, p_cross=p_cross, seed=args.seed)
+    save_training_params(h5_path, params, p_cross=p_cross, seed=args.seed,
+                         plasticity_on=plasticity_on)
 
     net_objs = load_baseline(args.baseline_h5, params, seed=args.seed)
     net_objs = build_stdp_network(net_objs, params, p_cross=p_cross, seed=args.seed)
@@ -308,7 +344,8 @@ def main():
     run_condition(net_objs, params, h5_path, theta_i,
                    n_per_direction=args.n_per_direction,
                    snapshot_epochs=set(args.snapshot_epochs),
-                   seed=args.seed, condition_name=args.condition)
+                   seed=args.seed, condition_name=args.condition,
+                   plasticity_on=plasticity_on, weight_norm=weight_norm)
 
     print(f"Done. Wrote {h5_path}")
 

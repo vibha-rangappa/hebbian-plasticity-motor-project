@@ -43,6 +43,25 @@ def test_rates_for_phase_exec_amplifies_prep_by_1_5():
     np.testing.assert_allclose(exec_rates, prep * 1.5)
 
 
+def test_rates_for_phase_exec_sustained_is_default():
+    """Default exec_mode preserves the sustained (amplified) behavior."""
+    theta_i = np.array([0.0, np.pi / 4])
+    prep = rates_for_phase(theta_cue=0.0, theta_i=theta_i, phase='prep')
+    exec_default = rates_for_phase(theta_cue=0.0, theta_i=theta_i, phase='exec')
+    exec_sustained = rates_for_phase(theta_cue=0.0, theta_i=theta_i, phase='exec',
+                                     exec_mode='sustained')
+    np.testing.assert_allclose(exec_default, prep * 1.5)
+    np.testing.assert_allclose(exec_sustained, prep * 1.5)
+
+
+def test_rates_for_phase_exec_autonomous_is_background():
+    """Autonomous exec withdraws task input to background (input clamp removed)."""
+    theta_i = np.array([0.0, np.pi / 4, np.pi])
+    rates = rates_for_phase(theta_cue=0.0, theta_i=theta_i, phase='exec',
+                            r_background=2.0, exec_mode='autonomous')
+    np.testing.assert_allclose(rates, [2.0, 2.0, 2.0])
+
+
 def test_rates_for_phase_iti_is_background_regardless_of_cue():
     theta_i = np.array([0.0, np.pi / 2, np.pi])
     rates = rates_for_phase(theta_cue=1.23, theta_i=theta_i, phase='iti')

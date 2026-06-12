@@ -115,15 +115,20 @@ def copy_baseline_provenance(h5_path, baseline_h5_path):
             src.copy(src[group_name], dst, group_name)
 
 
-def save_training_params(h5_path, params, p_cross, seed):
+def save_training_params(h5_path, params, p_cross, seed, plasticity_on=True):
     """
     Write /training_params attrs (spec section 6): p_cross, STDP params, task
-    input params, the trial-sequence seed, and burn-in duration.
+    input params, the trial-sequence seed, and burn-in duration. Also records
+    the execution regime (exec_mode) and whether STDP was on, so each output
+    file self-documents which experimental condition produced it.
     """
     with h5py.File(h5_path, 'a') as f:
         grp = f.require_group('training_params')
         grp.attrs['p_cross'] = float(p_cross)
         grp.attrs['seed'] = int(seed)
+        grp.attrs['exec_mode'] = str(params.get('exec_mode', 'sustained'))
+        grp.attrs['plasticity_on'] = bool(plasticity_on)
+        grp.attrs['weight_norm'] = bool(params.get('weight_norm', True))
         for k in ('tau_plus', 'tau_minus', 'A_plus', 'A_minus', 'w_max',
                   'n_input', 'r_max', 't_burn_in'):
             grp.attrs[k] = float(params[k])

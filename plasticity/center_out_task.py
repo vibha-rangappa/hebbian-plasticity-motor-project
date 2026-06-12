@@ -27,19 +27,31 @@ def assign_preferred_directions(n_input=50, n_directions=8):
 
 
 def rates_for_phase(theta_cue, theta_i, phase, r_max=100.0, r_background=2.0,
-                     exec_amplification=1.5):
+                     exec_amplification=1.5, exec_mode='sustained'):
     """
     Firing rates (Hz) for each input neuron during one trial phase.
 
     - 'prep': half-wave rectified cosine tuning curve (Georgopoulos et al.
       1982): r_i = r_max * max(0, cos(theta_cue - theta_i))
-    - 'exec': the prep tuning curve scaled by exec_amplification (stronger
-      drive during movement)
+    - 'exec': depends on exec_mode (see below)
     - 'iti': flat r_background for every neuron, independent of theta_cue
+
+    exec_mode controls the execution epoch:
+    - 'sustained' (default): exec = prep tuning curve x exec_amplification
+      (stronger drive during movement). The state is input-clamped.
+    - 'autonomous': exec input is withdrawn to r_background. The prep cue has
+      set a direction-dependent initial condition, and the recurrent network
+      then evolves *freely* during exec. This is the regime in which
+      movement-generating dynamics (rotation, Churchland 2012; transient
+      amplification, Hennequin et al. 2014) can appear -- a state clamped by
+      sustained input cannot show them. Background drive (nu_ext) is always on,
+      so the network does not go silent; only the task drive is removed.
 
     Returns an array the same shape as theta_i.
     """
     if phase == 'iti':
+        return np.full_like(theta_i, r_background, dtype=np.float64)
+    if phase == 'exec' and exec_mode == 'autonomous':
         return np.full_like(theta_i, r_background, dtype=np.float64)
 
     tuning = r_max * np.maximum(0.0, np.cos(theta_cue - theta_i))

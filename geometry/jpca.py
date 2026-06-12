@@ -24,6 +24,8 @@ constraint costs.
 
 import numpy as np
 
+from geometry._linalg import robust_svd
+
 
 def project_pcs(X, k):
     """
@@ -36,7 +38,7 @@ def project_pcs(X, k):
     N, T, C = X.shape
     D = np.transpose(X, (1, 2, 0)).reshape(T * C, N)     # (M, N)
     # Economy SVD; right singular vectors are the PCs in neuron space.
-    U, S, Vt = np.linalg.svd(D, full_matrices=False)
+    U, S, Vt = robust_svd(D, full_matrices=False)
     V = Vt[:k].T                                          # (N, k)
     scores = D @ V                                        # (M, k)
     Z = scores.reshape(T, C, k)

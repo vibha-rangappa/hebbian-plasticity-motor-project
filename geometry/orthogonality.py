@@ -19,6 +19,8 @@ orthogonality relative to that baseline).
 import numpy as np
 from scipy.linalg import subspace_angles
 
+from geometry._linalg import robust_svd
+
 
 def top_pc_basis(X, k=6):
     """
@@ -27,7 +29,7 @@ def top_pc_basis(X, k=6):
     """
     N, T, C = X.shape
     D = X.reshape(N, T * C)               # neurons x samples
-    U, S, Vt = np.linalg.svd(D, full_matrices=False)
+    U, S, Vt = robust_svd(D, full_matrices=False)
     return U[:, :k]
 
 

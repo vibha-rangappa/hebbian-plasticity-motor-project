@@ -13,7 +13,52 @@ from plasticity.stdp_network import (
     apply_pool_rescaling,
     load_baseline,
     build_stdp_network,
+    compute_target_insums,
+    rescale_to_target,
 )
+
+
+# ---- weight normalization (multiplicative synaptic scaling) ----
+
+def test_rescale_to_target_restores_per_post_sum():
+    # 2 post neurons. post 0 gets synapses [0,1], post 1 gets [2,3].
+    post = np.array([0, 0, 1, 1])
+    w = np.array([0.6, 0.4, 0.3, 0.3])        # post0 sum=1.0, post1 sum=0.6
+    target = np.array([1.0, 1.0])             # want both to sum to 1.0
+    w_max = 10.0
+    out = rescale_to_target(post, w, target, w_max)
+    assert out[:2].sum() == pytest.approx(1.0)
+    assert out[2:].sum() == pytest.approx(1.0)
+
+
+def test_rescale_to_target_preserves_relative_pattern():
+    """Multiplicative scaling keeps within-neuron weight ratios unchanged."""
+    post = np.array([0, 0, 0])
+    w = np.array([0.2, 0.4, 0.6])             # ratios 1:2:3
+    out = rescale_to_target(post, w, target=np.array([3.0]), w_max=10.0)
+    np.testing.assert_allclose(out / out[0], [1.0, 2.0, 3.0], rtol=1e-9)
+
+
+def test_rescale_to_target_clips_to_w_max():
+    post = np.array([0, 0])
+    w = np.array([1.0, 1.0])
+    # target 10 would scale each to 5, but w_max caps at 3.
+    out = rescale_to_target(post, w, target=np.array([10.0]), w_max=3.0)
+    assert np.all(out <= 3.0)
+
+
+def test_rescale_to_target_leaves_zero_sum_untouched():
+    post = np.array([0, 1, 1])
+    w = np.array([0.0, 0.5, 0.5])             # post0 has zero incoming sum
+    out = rescale_to_target(post, w, target=np.array([1.0, 1.0]), w_max=10.0)
+    assert out[0] == 0.0                      # factor 1, untouched
+
+
+def test_compute_target_insums_groups_by_post():
+    j = np.array([0, 0, 1, 2, 2])
+    w = np.array([0.1, 0.2, 0.5, 0.3, 0.4])
+    target = compute_target_insums(j, w, n_exc=3)
+    np.testing.assert_allclose(target, [0.3, 0.5, 0.7])
 
 
 def test_apply_pool_rescaling_cross_pool_only():

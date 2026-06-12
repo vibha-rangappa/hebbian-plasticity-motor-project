@@ -1,5 +1,6 @@
 circuit/results/
-plasticity/results/
+plasticity/results*/
+plasticity/*.log
 __pycache__/
 *.pyc
 .pytest_cache/
