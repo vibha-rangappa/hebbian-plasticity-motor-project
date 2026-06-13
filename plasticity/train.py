@@ -317,6 +317,16 @@ def main():
                          help="output filename suffix (default: condition); use to "
                               "distinguish runs that share a --condition, e.g. an "
                               "iSTDP-only decomposition control or sweep points")
+    # Inhibitory-plasticity parameter overrides (for the sweep). None = use default.
+    parser.add_argument('--rho0', type=float, default=None,
+                         help="iSTDP target E rate (Hz)")
+    parser.add_argument('--eta_istdp', type=float, default=None,
+                         help="iSTDP learning rate (A)")
+    parser.add_argument('--tau_istdp', type=float, default=None,
+                         help="iSTDP trace time constant (s)")
+    parser.add_argument('--ee_plasticity', choices=['on', 'off'], default=None,
+                         help="override E->E STDP independent of --condition (the sweep's "
+                              "E->E null axis); default follows --condition")
     args = parser.parse_args()
 
     params = {**DEFAULT_PARAMS, **DEFAULT_PARAMS_PLASTICITY}
@@ -330,6 +340,13 @@ def main():
     params['weight_norm'] = weight_norm
     inhibitory_plasticity = (args.inhibitory_plasticity == 'on')
     params['inhibitory_plasticity'] = inhibitory_plasticity
+
+    # Sweep overrides.
+    for key in ('rho0', 'eta_istdp', 'tau_istdp'):
+        if getattr(args, key) is not None:
+            params[key] = getattr(args, key)
+    if args.ee_plasticity is not None:
+        plasticity_on = (args.ee_plasticity == 'on')
 
     label = args.label or args.condition
     os.makedirs(args.results_dir, exist_ok=True)

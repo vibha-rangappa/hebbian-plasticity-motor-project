@@ -130,6 +130,11 @@ def save_training_params(h5_path, params, p_cross, seed, plasticity_on=True):
         grp.attrs['plasticity_on'] = bool(plasticity_on)
         grp.attrs['weight_norm'] = bool(params.get('weight_norm', True))
         grp.attrs['inhibitory_plasticity'] = bool(params.get('inhibitory_plasticity', False))
+        # Inhibitory-plasticity params (swept axes); recorded so the sweep aggregation
+        # can read each run's coordinates straight from its file.
+        for k in ('rho0', 'eta_istdp', 'tau_istdp'):
+            if k in params:
+                grp.attrs[k] = float(params[k])
         for k in ('tau_plus', 'tau_minus', 'A_plus', 'A_minus', 'w_max',
                   'n_input', 'r_max', 't_burn_in'):
             grp.attrs[k] = float(params[k])
