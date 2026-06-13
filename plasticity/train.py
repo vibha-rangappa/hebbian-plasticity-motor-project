@@ -297,6 +297,10 @@ def main():
                          help="on (default): multiplicative synaptic scaling after each "
                               "trial holds total incoming E->E weight constant, keeping "
                               "the network in the AI regime; off: raw additive STDP")
+    parser.add_argument('--inhibitory_plasticity', choices=['on', 'off'], default='off',
+                         help="on: Vogels (2011) inhibitory STDP on I->E synapses drives "
+                              "each E neuron toward rho0, stabilizing the network gain; "
+                              "off (default): static inhibition")
     parser.add_argument('--n_per_direction', type=int, default=13,
                          help="Training trials per direction (default 13 -> "
                               "104 total)")
@@ -309,6 +313,10 @@ def main():
     parser.add_argument('--baseline_h5', type=str,
                          default='circuit/results/baseline_network.h5')
     parser.add_argument('--results_dir', type=str, default='plasticity/results')
+    parser.add_argument('--label', type=str, default=None,
+                         help="output filename suffix (default: condition); use to "
+                              "distinguish runs that share a --condition, e.g. an "
+                              "iSTDP-only decomposition control or sweep points")
     args = parser.parse_args()
 
     params = {**DEFAULT_PARAMS, **DEFAULT_PARAMS_PLASTICITY}
@@ -320,9 +328,12 @@ def main():
     plasticity_on = (args.condition != 'frozen')
     weight_norm = (args.weight_norm == 'on')
     params['weight_norm'] = weight_norm
+    inhibitory_plasticity = (args.inhibitory_plasticity == 'on')
+    params['inhibitory_plasticity'] = inhibitory_plasticity
 
+    label = args.label or args.condition
     os.makedirs(args.results_dir, exist_ok=True)
-    h5_path = os.path.join(args.results_dir, f'training_{args.condition}.h5')
+    h5_path = os.path.join(args.results_dir, f'training_{label}.h5')
     if os.path.exists(h5_path):
         os.remove(h5_path)
 
@@ -333,7 +344,8 @@ def main():
                          plasticity_on=plasticity_on)
 
     net_objs = load_baseline(args.baseline_h5, params, seed=args.seed)
-    net_objs = build_stdp_network(net_objs, params, p_cross=p_cross, seed=args.seed)
+    net_objs = build_stdp_network(net_objs, params, p_cross=p_cross, seed=args.seed,
+                                  inhibitory_plasticity=inhibitory_plasticity)
     theta_i = assign_preferred_directions(params['n_input'], params['n_directions'])
 
     # Codegen target is selected only after the network is fully built (see
@@ -344,7 +356,7 @@ def main():
     run_condition(net_objs, params, h5_path, theta_i,
                    n_per_direction=args.n_per_direction,
                    snapshot_epochs=set(args.snapshot_epochs),
-                   seed=args.seed, condition_name=args.condition,
+                   seed=args.seed, condition_name=label,
                    plasticity_on=plasticity_on, weight_norm=weight_norm)
 
     print(f"Done. Wrote {h5_path}")

@@ -51,6 +51,14 @@ DEFAULT_PARAMS_PLASTICITY = {
     # Cross-pool (P<->X) weight scaling for the two conditions
     'p_cross_seeded':  0.2,
     'p_cross_control': 1.0,
+
+    # Inhibitory STDP (Vogels et al. 2011) on I->E synapses. Off by default;
+    # enabled via build_stdp_network(inhibitory_plasticity=True). Stabilizes the
+    # network under E->E STDP by driving each E neuron toward rho0.
+    'tau_istdp': 20e-3,     # s    inhibitory trace time constant
+    'rho0':      3.0,       # Hz   target postsynaptic E rate (the AI operating point)
+    'eta_istdp': 1e-12,     # A    inhibitory learning rate
+    'w_max_inh': 0.90e-9,   # A    upper bound on inhibitory weight (10x g_EI)
 }
 
 
@@ -178,7 +186,54 @@ def normalize_incoming_weights(syn, target, w_max):
     syn.w = rescale_to_target(post, w, target, w_max) * amp
 
 
-def build_stdp_network(net_objs, params, p_cross, seed=42):
+def build_inhibitory_stdp_synapse(inh, exc, static_syn_IE, params):
+    """
+    Build a plastic I->E synapse group implementing the Vogels et al. (2011) inhibitory
+    STDP rule, preserving the connectivity (i, j) and initial weights of the static
+    baseline syn_IE.
+
+    The rule (see spec): a symmetric Hebbian rule on inhibitory synapses that drives each
+    postsynaptic E neuron toward rho0. alpha = 2*rho0*tau_istdp is the depression constant
+    that sets the target rate. Weights stay in [0, w_max_inh]; the postsynaptic membrane
+    convention matches circuit/network.py (I_inh_post += w, entered as -I_inh in dv/dt).
+    """
+    p = params
+    i_arr = np.array(static_syn_IE.i[:], dtype=np.int32)
+    j_arr = np.array(static_syn_IE.j[:], dtype=np.int32)
+    w_arr = np.array(static_syn_IE.w[:] / amp, dtype=np.float64)
+
+    alpha = 2.0 * p['rho0'] * p['tau_istdp']     # dimensionless target-rate setpoint
+    istdp_ns = {
+        'tau_istdp': p['tau_istdp'] * second,
+        'eta_istdp': p['eta_istdp'] * amp,
+        'w_max_inh': p['w_max_inh'] * amp,
+        'alpha': alpha,
+    }
+    istdp_eqs = '''
+    w : amp
+    dapre_i/dt  = -apre_i  / tau_istdp : 1 (event-driven)
+    dapost_i/dt = -apost_i / tau_istdp : 1 (event-driven)
+    '''
+    # on_pre = inhibitory neuron spikes; on_post = excitatory neuron spikes.
+    on_pre_eqs = '''
+    I_inh_post += w
+    apre_i += 1
+    w = clip(w + eta_istdp * (apost_i - alpha), 0*amp, w_max_inh)
+    '''
+    on_post_eqs = '''
+    apost_i += 1
+    w = clip(w + eta_istdp * apre_i, 0*amp, w_max_inh)
+    '''
+    syn = Synapses(inh, exc, istdp_eqs, on_pre=on_pre_eqs, on_post=on_post_eqs,
+                   namespace=istdp_ns, method='euler', name='syn_IE_istdp')
+    syn.connect(i=i_arr, j=j_arr)
+    syn.w = w_arr * amp
+    syn.apre_i = 0
+    syn.apost_i = 0
+    return syn
+
+
+def build_stdp_network(net_objs, params, p_cross, seed=42, inhibitory_plasticity=False):
     """
     Replace syn_EE with a plastic STDP synapse group (pool-rescaled initial
     weights, spec 2.1/2.2) and add 50 task-input neurons connected to both E
@@ -281,9 +336,17 @@ def build_stdp_network(net_objs, params, p_cross, seed=42):
 
     spike_input = SpikeMonitor(input_group)
 
+    # Optionally replace the static I->E synapses with a plastic Vogels-rule group.
+    if inhibitory_plasticity:
+        syn_IE = build_inhibitory_stdp_synapse(exc=exc, inh=inh,
+                                               static_syn_IE=net_objs['syn_IE'],
+                                               params=p)
+    else:
+        syn_IE = net_objs['syn_IE']
+
     net = Network(
         exc, inh,
-        syn_EE_stdp, net_objs['syn_EI'], net_objs['syn_IE'], net_objs['syn_II'],
+        syn_EE_stdp, net_objs['syn_EI'], syn_IE, net_objs['syn_II'],
         net_objs['drive_E'], net_objs['drive_I'],
         net_objs['spike_E'], net_objs['spike_I'],
         input_group, syn_input_E, syn_input_I, spike_input,
@@ -291,6 +354,8 @@ def build_stdp_network(net_objs, params, p_cross, seed=42):
 
     result = dict(net_objs)
     result['syn_EE'] = syn_EE_stdp
+    result['syn_IE'] = syn_IE
+    result['inhibitory_plasticity'] = inhibitory_plasticity
     # Per-postsynaptic-neuron target incoming-weight sum, captured from the initial
     # (rescaled, clipped) weights. Held fixed as the synaptic-scaling target so STDP
     # redistributes rather than inflates each neuron's total excitatory drive.

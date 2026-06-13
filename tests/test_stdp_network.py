@@ -205,6 +205,50 @@ def test_build_stdp_network_clips_initial_weights_to_w_max():
     np.testing.assert_allclose(w_after[cross_idx], 0.2 * small['w_max'], rtol=1e-6)
 
 
+def test_inhibitory_plasticity_off_by_default_keeps_syn_IE_static():
+    """Default build leaves I->E without plastic trace variables (regression guard)."""
+    start_scope()
+    small = _small_params()
+    net_objs = build_network(small, seed=1)
+    result = build_stdp_network(net_objs, small, p_cross=1.0, seed=1)
+    assert result['inhibitory_plasticity'] is False
+    assert not hasattr(result['syn_IE'], 'apre_i')
+
+
+def test_inhibitory_plasticity_preserves_connectivity_and_init_weights():
+    start_scope()
+    small = _small_params()
+    net_objs = build_network(small, seed=1)
+    i_before = np.array(net_objs['syn_IE'].i[:])
+    j_before = np.array(net_objs['syn_IE'].j[:])
+    w_before = np.array(net_objs['syn_IE'].w[:] / amp)
+
+    result = build_stdp_network(net_objs, small, p_cross=1.0, seed=1,
+                                inhibitory_plasticity=True)
+    syn = result['syn_IE']
+    np.testing.assert_array_equal(np.array(syn.i[:]), i_before)
+    np.testing.assert_array_equal(np.array(syn.j[:]), j_before)
+    np.testing.assert_allclose(np.array(syn.w[:] / amp), w_before, rtol=1e-6)
+    assert hasattr(syn, 'apre_i') and hasattr(syn, 'apost_i')
+
+
+def test_inhibitory_plasticity_potentiates_when_E_fires_above_target():
+    """With E driven hard (well above rho0), iSTDP should grow inhibitory weights."""
+    start_scope()
+    small = _small_params(nu_ext=1500.0)   # drive E far above rho0
+    net_objs = build_network(small, seed=1)
+    result = build_stdp_network(net_objs, small, p_cross=1.0, seed=1,
+                                inhibitory_plasticity=True)
+    syn = result['syn_IE']
+    w_before = np.array(syn.w[:] / amp).copy()
+    result['net'].run(0.5 * second)
+    w_after = np.array(syn.w[:] / amp)
+    # Homeostatic response: mean inhibition increases to pull the rate back toward rho0.
+    assert w_after.mean() > w_before.mean()
+    assert np.all(w_after >= 0.0)                       # inhibitory weights stay non-negative
+    assert np.all(w_after <= small['w_max_inh'] * 1.0000001)
+
+
 def test_build_stdp_network_has_stdp_state_variables():
     start_scope()
     small = _small_params()

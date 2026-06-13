@@ -129,6 +129,7 @@ def save_training_params(h5_path, params, p_cross, seed, plasticity_on=True):
         grp.attrs['exec_mode'] = str(params.get('exec_mode', 'sustained'))
         grp.attrs['plasticity_on'] = bool(plasticity_on)
         grp.attrs['weight_norm'] = bool(params.get('weight_norm', True))
+        grp.attrs['inhibitory_plasticity'] = bool(params.get('inhibitory_plasticity', False))
         for k in ('tau_plus', 'tau_minus', 'A_plus', 'A_minus', 'w_max',
                   'n_input', 'r_max', 't_burn_in'):
             grp.attrs[k] = float(params[k])
