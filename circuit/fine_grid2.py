@@ -1,3 +1,15 @@
+"""
+This is a second, narrower one-off calibration scan, following on from
+fine_grid.py. It zooms in on the transition between an excitation-dominated
+regime (too much E activity) and a balanced regime, scanning over nu_ext
+(background input rate) and g_EI (inhibitory weight).
+
+For each (nu_ext, g_EI) pair it runs a short 5-second simulation, then
+prints the E and I firing rates, the I/E rate ratio, and the CV-ISI
+(irregularity measure), with an "AI" flag marking combinations that land in
+the target asynchronous irregular regime (firing rate 2-10 Hz, CV-ISI
+between 0.8 and 1.2).
+"""
 import numpy as np
 import sys
 from brian2 import *
@@ -5,7 +17,7 @@ prefs.codegen.target = 'numpy'
 from circuit.network import build_network, DEFAULT_PARAMS
 from circuit.run_baseline import compute_cv_isi, _extract_spike_trains
 
-# Focus on the transition between excitation-dominated and balanced regimes
+# Zoom in on the transition between an excitation-dominated regime and a balanced regime
 nu_vals  = [3.0, 4.0, 5.0, 6.0, 7.0]
 gei_vals = np.array([0.040, 0.045, 0.050, 0.055, 0.060, 0.065, 0.070]) * 1e-9
 

@@ -1,12 +1,21 @@
 # plasticity/stdp_network.py
 
 """
-STDP network factory: loads the circuit baseline, adds pair-based STDP on
-E->E synapses (Song, Miller & Abbott 2000), applies P/X/S pool rescaling, and
-adds 50 task-input neurons connected to both E and I populations.
+This file builds the plastic version of the network used for training.
 
-See docs/superpowers/specs/2026-06-10-stdp-center-out-task-design.md for the
-full design and parameter justifications.
+It takes the static circuit baseline and:
+  - adds pair-based STDP to the E->E (excitatory-to-excitatory) synapses
+    (the rule from Song, Miller & Abbott 2000),
+  - rescales weights between the P, X, and S neuron pools,
+  - adds 50 task-input neurons that connect to both the E and I populations.
+
+It also has the option to make the I->E (inhibitory-to-excitatory) synapses
+plastic too, using the inhibitory STDP rule from Vogels et al. 2011, which
+homeostatically pulls each excitatory neuron's firing rate toward a target
+rate (rho0).
+
+See README.md, "Part 2: Task and plasticity", for the full design and the
+reasoning behind the parameter choices.
 """
 
 import h5py
@@ -20,24 +29,27 @@ from circuit.network import build_network, DEFAULT_PARAMS, _lognormal_weights
 
 
 DEFAULT_PARAMS_PLASTICITY = {
-    # Subpopulation sizes (E neuron indices: P=[0,P_size), X=[P_size,P_size+X_size),
-    # S=[P_size+X_size, N_exc)). Must satisfy P_size + X_size <= N_exc.
+    # How the excitatory neurons are split into pools by index:
+    # P = neurons [0, P_size), X = neurons [P_size, P_size+X_size), S = everything
+    # else. Need P_size + X_size <= N_exc.
     'P_size': 350,
     'X_size': 350,
 
-    # STDP (spec 2.1). w_max = 4x w_mean_EE; A_plus/A_minus = 0.01/0.0105 x w_max
-    # (5% depression-dominant, the Song et al. 2000 stability condition).
+    # STDP settings (spec 2.1). w_max is set to 4x the mean E->E weight.
+    # A_plus and A_minus are 0.01x and 0.0105x w_max, so depression is about
+    # 5% stronger than potentiation. This 5%-depression-dominant setting is
+    # the Song et al. 2000 condition for keeping the weights stable.
     'tau_plus':  20e-3,      # s
     'tau_minus': 20e-3,      # s
     'w_max':     0.24e-9,    # A
     'A_plus':    0.0024e-9,  # A
     'A_minus':   0.00252e-9, # A
 
-    # Task input (spec 2.3)
+    # Task input settings (spec 2.3)
     'n_input':       50,
     'n_directions':  8,
     'r_max':         100.0,  # Hz
-    'r_background':  2.0,    # Hz (ITI level)
+    'r_background':  2.0,    # Hz (rate during the inter-trial interval)
     'exec_amplification': 1.5,
 
     # Trial timing (seconds)
@@ -45,42 +57,46 @@ DEFAULT_PARAMS_PLASTICITY = {
     't_exec': 0.5,
     't_iti':  0.2,
 
-    # Burn-in (seconds) — see spec section 3
+    # How long to run the network before training starts, in seconds, to let
+    # it settle into its steady-state firing pattern (see spec section 3).
     't_burn_in': 15.0,
 
-    # Cross-pool (P<->X) weight scaling for the two conditions
+    # Scaling factor applied to weights crossing between the P and X pools,
+    # one value per condition.
     'p_cross_seeded':  0.2,
     'p_cross_control': 1.0,
 
-    # Inhibitory STDP (Vogels et al. 2011) on I->E synapses. Off by default;
-    # enabled via build_stdp_network(inhibitory_plasticity=True). Stabilizes the
-    # network under E->E STDP by driving each E neuron toward rho0.
-    'tau_istdp': 20e-3,     # s    inhibitory trace time constant
-    'rho0':      3.0,       # Hz   target postsynaptic E rate (the AI operating point)
-    'eta_istdp': 1e-12,     # A    inhibitory learning rate
-    'w_max_inh': 0.90e-9,   # A    upper bound on inhibitory weight (10x g_EI)
+    # Inhibitory STDP (Vogels et al. 2011) on the I->E synapses. Off by
+    # default, turned on via build_stdp_network(inhibitory_plasticity=True).
+    # This rule helps keep the network stable under E->E STDP by pushing each
+    # excitatory neuron's firing rate toward rho0.
+    'tau_istdp': 20e-3,     # s    time constant of the inhibitory STDP trace
+    'rho0':      3.0,       # Hz   target firing rate for excitatory neurons (the network's normal operating point)
+    'eta_istdp': 1e-12,     # A    inhibitory learning rate (how big each weight step is)
+    'w_max_inh': 0.90e-9,   # A    upper limit on an inhibitory weight (10x the baseline I->E weight, g_EI)
 }
 
 
 def apply_pool_rescaling(i, j, w, p_cross, P_size, X_size):
     """
-    Rescale E->E weights by P/X/S pool membership (spec 2.2).
+    Scale down E->E weights for synapses that cross between the P and X
+    neuron pools (spec 2.2).
 
-    Pools by neuron index: P = [0, P_size), X = [P_size, P_size+X_size),
-    S = everything else. Synapses crossing P<->X (in either direction) are
-    multiplied by p_cross; all other synapses (within-pool, or touching S)
-    are returned unchanged.
+    Pools are defined by neuron index: P = [0, P_size), X = [P_size,
+    P_size+X_size), and S = everything else. Any synapse that goes from P to
+    X or from X to P gets multiplied by p_cross. All other synapses (within a
+    pool, or touching the S pool) are left unchanged.
 
     Parameters
     ----------
-    i, j : array_like of int   — presynaptic (i) / postsynaptic (j) indices
-    w    : array_like of float — weights, same length as i and j
-    p_cross : float            — cross-pool scale (0.2 seeded, 1.0 control)
-    P_size, X_size : int       — sizes of the P and X pools
+    i, j : array_like of int, presynaptic (i) / postsynaptic (j) neuron indices
+    w    : array_like of float, weights, same length as i and j
+    p_cross : float, scale factor for cross-pool synapses (0.2 for seeded, 1.0 for control)
+    P_size, X_size : int, sizes of the P and X pools
 
     Returns
     -------
-    np.ndarray — rescaled copy of w (input is not mutated)
+    np.ndarray, rescaled copy of w (the input array is not changed)
     """
     i = np.asarray(i)
     j = np.asarray(j)
@@ -98,18 +114,22 @@ def apply_pool_rescaling(i, j, w, p_cross, P_size, X_size):
 
 def load_baseline(h5_path, params, seed=42):
     """
-    Rebuild the circuit network and overwrite weights from the saved HDF5.
+    Rebuild the circuit network from scratch, then overwrite its weights with
+    the ones saved in the HDF5 baseline file.
 
-    build_network(params, seed=seed) is fully deterministic (Brian2's RNG and
-    the numpy weight-init RNG are both seeded), so it reproduces the same
-    connectivity and weights as baseline_network.h5. We additionally:
+    build_network(params, seed=seed) is fully deterministic (both Brian2's
+    random number generator and the numpy one used for weight initialization
+    are seeded), so calling it again reproduces the same connectivity and
+    weights as baseline_network.h5. On top of that, this function:
 
-    1. Assert the reproduced (i, j) connectivity matches the saved (row, col)
-       COO indices for all four synapse groups — a sanity check that `params`
-       and `seed` match what produced the saved file.
-    2. Overwrite `.w` from the saved `data` arrays directly, so training starts
-       from the exact validated weights regardless of any future
-       floating-point/library-version drift in step 1.
+    1. Checks that the connectivity (i, j) it just built matches the saved
+       (row, col) indices for all four synapse groups. This is a sanity check
+       that `params` and `seed` match whatever was used to create the saved
+       file.
+    2. Overwrites `.w` directly from the saved `data` arrays, so training
+       starts from the exact same weights that were validated before, even if
+       some future change to floating-point handling or library versions
+       would otherwise cause tiny differences in step 1.
 
     Returns the same dict shape as build_network().
     """
@@ -126,8 +146,9 @@ def load_baseline(h5_path, params, seed=42):
             saved_col = f[f'weights/{name}/col'][:]
             saved_data = f[f'weights/{name}/data'][:]
 
-            # .j = postsynaptic (row), .i = presynaptic (col) — matches the
-            # convention in circuit/run_baseline.py's save_baseline().
+            # .j is the postsynaptic neuron (saved as "row"), .i is the
+            # presynaptic neuron (saved as "col"). This matches the
+            # convention used in circuit/run_baseline.py's save_baseline().
             actual_row = np.array(syn.j[:], dtype=np.int32)
             actual_col = np.array(syn.i[:], dtype=np.int32)
 
@@ -147,9 +168,10 @@ def load_baseline(h5_path, params, seed=42):
 
 def compute_target_insums(j_arr, w, n_exc):
     """
-    Per-postsynaptic-neuron sum of incoming E->E weights: target[j] = sum of w over
-    synapses whose postsynaptic index is j. Captured once at build time and held fixed
-    as the normalization target.
+    For each excitatory neuron, add up the weights of all its incoming E->E
+    synapses: target[j] = sum of w over synapses whose postsynaptic neuron is
+    j. This is computed once when the network is built and kept fixed as the
+    target total for synaptic scaling.
     """
     return np.bincount(np.asarray(j_arr), weights=np.asarray(w, dtype=np.float64),
                        minlength=n_exc)
@@ -157,17 +179,23 @@ def compute_target_insums(j_arr, w, n_exc):
 
 def rescale_to_target(post, w, target, w_max):
     """
-    Multiplicative synaptic scaling (pure numpy core). For each postsynaptic neuron,
-    rescale its incoming weights so they sum to target[j], then clip to [0, w_max].
+    The plain-numpy core of synaptic scaling. For each postsynaptic neuron,
+    rescale its incoming weights so they add up to target[j], then clip the
+    result to [0, w_max].
 
-    Multiplicative (not subtractive) so the *relative* weight pattern STDP learned is
-    preserved while the per-neuron total is held constant (Turrigiano-style scaling).
-    This converts STDP from mean-weight drift (which drove the runaway we observed) into
-    pure redistribution, keeping the network at its balanced AI operating point.
+    This is a multiplicative rescale (every incoming weight is multiplied by
+    the same factor), not a subtractive one. That way the *pattern* of
+    relative weight sizes that STDP has learned is kept, but each neuron's
+    total incoming weight stays the same (this is "Turrigiano-style" synaptic
+    scaling). Without this, STDP slowly drifts the average weight up, which is
+    what caused the runaway growth we saw before. With this rescaling, STDP
+    just redistributes weight among synapses instead of inflating the total,
+    so the network stays at its normal balanced operating point.
 
-    Neurons whose current incoming sum is 0 are left untouched (factor 1).
-    Order: scale, then clip -- clipping can leave a neuron's sum slightly below target
-    (only when a weight hits w_max), an acceptable small drift.
+    If a neuron's current incoming sum is 0, it is left alone (scale factor
+    of 1). We scale first and then clip, so clipping can occasionally leave a
+    neuron's total slightly below its target (only when a weight hits
+    w_max). That small amount of drift is fine.
     """
     post = np.asarray(post)
     w = np.asarray(w, dtype=np.float64)
@@ -180,7 +208,7 @@ def rescale_to_target(post, w, target, w_max):
 
 
 def normalize_incoming_weights(syn, target, w_max):
-    """Apply rescale_to_target in place to a Brian2 E->E synapse group (weights in amp)."""
+    """Apply rescale_to_target in place to a Brian2 E->E synapse group (weights are in amp)."""
     post = np.asarray(syn.j[:])
     w = np.asarray(syn.w[:] / amp)
     syn.w = rescale_to_target(post, w, target, w_max) * amp
@@ -188,33 +216,40 @@ def normalize_incoming_weights(syn, target, w_max):
 
 def build_inhibitory_stdp_synapse(inh, exc, static_syn_IE, params):
     """
-    Build a plastic I->E synapse group implementing the Vogels et al. (2011) inhibitory
-    STDP rule, preserving the connectivity (i, j) and initial weights of the static
-    baseline syn_IE.
+    Build a plastic I->E synapse group that implements the Vogels et al. (2011)
+    inhibitory STDP rule. It keeps the same connectivity (i, j) and starting
+    weights as the static baseline syn_IE, just makes the weights plastic.
 
-    The rule (see spec): a symmetric Hebbian rule on inhibitory synapses that drives each
-    postsynaptic E neuron toward rho0. alpha = 2*rho0*tau_istdp is the depression constant
-    that sets the target rate. Weights stay in [0, w_max_inh]; the postsynaptic membrane
-    convention matches circuit/network.py (I_inh_post += w, entered as -I_inh in dv/dt).
+    This rule is a "symmetric Hebbian" rule on inhibitory synapses: it
+    nudges each excitatory neuron's firing rate toward the target rate rho0.
+    alpha = 2*rho0*tau_istdp is the constant that sets this target rate
+    (it appears in the depression term below). Weights are kept in the range
+    [0, w_max_inh]. The way inhibition affects the membrane potential matches
+    circuit/network.py: each inhibitory spike adds w to I_inh, and I_inh
+    enters the voltage equation with a minus sign (so inhibition).
     """
     p = params
     i_arr = np.array(static_syn_IE.i[:], dtype=np.int32)
     j_arr = np.array(static_syn_IE.j[:], dtype=np.int32)
     w_arr = np.array(static_syn_IE.w[:] / amp, dtype=np.float64)
 
-    alpha = 2.0 * p['rho0'] * p['tau_istdp']     # dimensionless target-rate setpoint
+    alpha = 2.0 * p['rho0'] * p['tau_istdp']     # this is a unitless number that sets the target firing rate
     istdp_ns = {
         'tau_istdp': p['tau_istdp'] * second,
         'eta_istdp': p['eta_istdp'] * amp,
         'w_max_inh': p['w_max_inh'] * amp,
         'alpha': alpha,
     }
+    # Each synapse has a weight w, plus two "traces" (apre_i and apost_i)
+    # that track recent spikes. Each trace just decays exponentially back
+    # to 0 with time constant tau_istdp when nothing is spiking.
     istdp_eqs = '''
     w : amp
     dapre_i/dt  = -apre_i  / tau_istdp : 1 (event-driven)
     dapost_i/dt = -apost_i / tau_istdp : 1 (event-driven)
     '''
-    # on_pre = inhibitory neuron spikes; on_post = excitatory neuron spikes.
+    # on_pre runs every time the inhibitory (presynaptic) neuron fires;
+    # on_post runs every time the excitatory (postsynaptic) neuron fires.
     on_pre_eqs = '''
     I_inh_post += w
     apre_i += 1
@@ -235,15 +270,17 @@ def build_inhibitory_stdp_synapse(inh, exc, static_syn_IE, params):
 
 def build_stdp_network(net_objs, params, p_cross, seed=42, inhibitory_plasticity=False):
     """
-    Replace syn_EE with a plastic STDP synapse group (pool-rescaled initial
-    weights, spec 2.1/2.2) and add 50 task-input neurons connected to both E
-    and I populations (spec 2.3).
+    Replace the static syn_EE synapses with a plastic STDP synapse group
+    (using initial weights that have already been rescaled by pool, per spec
+    2.1/2.2), and add 50 task-input neurons connected to both the E and I
+    populations (spec 2.3).
 
-    Returns an updated net_objs dict: same keys as build_network()/
-    load_baseline(), with 'syn_EE' replaced by the STDP group, plus
-    'input_group', 'syn_input_E', 'syn_input_I', 'spike_input' added, and a
-    fresh Network() containing all active components. The original syn_EE
-    (and the Network it was part of) is left intact but unused.
+    Returns an updated net_objs dict: same keys as build_network() /
+    load_baseline(), but with 'syn_EE' now pointing to the new STDP group,
+    plus new entries 'input_group', 'syn_input_E', 'syn_input_I',
+    'spike_input', and a fresh Network() containing everything that's
+    actually used. The original syn_EE (and the Network it used to belong to)
+    is left as-is but is no longer used.
     """
     p = params
     old_syn_EE = net_objs['syn_EE']
@@ -253,13 +290,15 @@ def build_stdp_network(net_objs, params, p_cross, seed=42, inhibitory_plasticity
     j_arr = np.array(old_syn_EE.j[:], dtype=np.int32)
     w_arr = np.array(old_syn_EE.w[:] / amp, dtype=np.float64)
 
-    # The circuit's lognormal W_EE is unbounded, but the STDP on_pre/on_post
-    # clip(..., 0, w_max) below applies on every spike regardless of
-    # `plastic` -- a synapse with w > w_max would be silently clamped to
-    # w_max on its first spike (even during the frozen burn-in). Clip here,
-    # before pool rescaling, so initial weights don't depend on burn-in
-    # spike timing and the seeded/control cross-pool ratio is exactly
-    # p_cross even for synapses whose baseline weight exceeded w_max.
+    # The circuit's starting weights (drawn from a lognormal distribution) are
+    # not capped, but the STDP on_pre/on_post rules below always clip the
+    # weight to [0, w_max], on every spike, regardless of whether `plastic`
+    # is on. So a synapse that starts above w_max would get silently clamped
+    # down to w_max the first time it spikes, even during the frozen burn-in.
+    # To avoid that surprise, we clip here first, before doing the pool
+    # rescaling. This way the starting weights don't depend on the timing of
+    # burn-in spikes, and the seeded/control cross-pool ratio comes out to
+    # exactly p_cross even for synapses that started above w_max.
     w_arr = np.clip(w_arr, 0.0, p['w_max'])
 
     w_rescaled = apply_pool_rescaling(
@@ -273,18 +312,45 @@ def build_stdp_network(net_objs, params, p_cross, seed=42, inhibitory_plasticity
         'w_max':     p['w_max']     * amp,
     }
 
-    # Pair-based STDP, event-driven traces (Song, Miller & Abbott 2000).
-    # Depression on presynaptic spike (acausal: post fired recently);
-    # potentiation on postsynaptic spike (causal: pre fired recently).
-    # `plastic` is a shared flag: 0 freezes weight changes (traces still
-    # update) for burn-in and snapshot test trials.
+    # This is the standard pair-based STDP rule (Song, Miller & Abbott 2000),
+    # with two trace variables that update only on spikes ("event-driven").
+    #
+    # Each synapse keeps two traces, apre and apost, that record how recently
+    # the presynaptic and postsynaptic neurons fired. Between spikes they
+    # just decay back toward 0 (apre with time constant tau_plus, apost with
+    # tau_minus).
+    #
+    # When the presynaptic neuron fires (on_pre):
+    #   - it adds its current weight w to the postsynaptic neuron's input
+    #     (I_exc_post += w)
+    #   - it bumps up its own apre trace by 1
+    #   - it weakens the weight (depression) by an amount proportional to
+    #     A_minus times the current apost trace. apost being large here means
+    #     "the postsynaptic neuron fired recently, before this presynaptic
+    #     spike" (i.e. the wrong order for causality), so the synapse gets
+    #     weaker.
+    #
+    # When the postsynaptic neuron fires (on_post):
+    #   - it bumps up its own apost trace by 1
+    #   - it strengthens the weight (potentiation) by an amount proportional
+    #     to A_plus times the current apre trace. apre being large here means
+    #     "the presynaptic neuron fired recently, before this postsynaptic
+    #     spike" (the causal order), so the synapse gets stronger.
+    #
+    # In both cases the weight is clipped back into [0, w_max] right away.
+    #
+    # `plastic` is a shared on/off switch: when it's 0, the weight-change
+    # terms are multiplied by 0 so weights stop changing (but the apre/apost
+    # traces keep updating). This is used to freeze learning during burn-in
+    # and during snapshot test trials.
     #
     # NOTE: the traces are named `apre`/`apost` rather than `x_pre`/`x_post`
-    # (the spec's naming) because Brian2 reserves any synaptic variable name
-    # ending in `_pre`/`_post` for referring to the corresponding pre-/
-    # post-synaptic *group* variable (e.g. `v_pre` == `exc.v` of the
-    # presynaptic neuron) and raises a ValueError if you try to declare one.
-    # `apre`/`apost` is the standard Brian2 STDP-tutorial naming.
+    # (which is what the spec calls them) because Brian2 treats any synaptic
+    # variable name ending in `_pre`/`_post` as a reference to a variable on
+    # the connected neuron group itself (e.g. `v_pre` would mean `exc.v` of
+    # the presynaptic neuron), and raises an error if you try to declare your
+    # own variable with that kind of name. `apre`/`apost` is just the naming
+    # Brian2's own STDP tutorial uses, to avoid this clash.
     stdp_eqs = '''
     w : amp
     plastic : 1 (shared)
@@ -311,11 +377,14 @@ def build_stdp_network(net_objs, params, p_cross, seed=42, inhibitory_plasticity
     syn_EE_stdp.apre = 0
     syn_EE_stdp.apost = 0
 
-    # Task-input neurons: 50 Poisson units, connected to both E and I at the
-    # same density as recurrent connectivity (p_connect), with static
-    # (non-plastic) lognormal weights. Drawn from a separate RNG stream
-    # (seed + 1000) so input-weight draws don't shift the recurrent network's
-    # weight draws inside build_network().
+    # Task-input neurons: 50 independent Poisson spike sources, connected to
+    # both the E and I populations at the same connection density as the
+    # recurrent connections (p_connect). Their weights are fixed (not
+    # plastic) and drawn from the same lognormal distribution as the
+    # recurrent weights. We use a separate random number generator (seeded
+    # with seed + 1000) for these weight draws, so that adding this input
+    # doesn't change any of the random draws used inside build_network() for
+    # the recurrent network.
     n_input = p['n_input']
     input_group = PoissonGroup(
         n_input, rates=np.full(n_input, p['r_background']) * Hz,
@@ -336,7 +405,8 @@ def build_stdp_network(net_objs, params, p_cross, seed=42, inhibitory_plasticity
 
     spike_input = SpikeMonitor(input_group)
 
-    # Optionally replace the static I->E synapses with a plastic Vogels-rule group.
+    # If requested, swap in the plastic Vogels-rule I->E synapses instead of
+    # the static ones.
     if inhibitory_plasticity:
         syn_IE = build_inhibitory_stdp_synapse(exc=exc, inh=inh,
                                                static_syn_IE=net_objs['syn_IE'],
@@ -356,9 +426,10 @@ def build_stdp_network(net_objs, params, p_cross, seed=42, inhibitory_plasticity
     result['syn_EE'] = syn_EE_stdp
     result['syn_IE'] = syn_IE
     result['inhibitory_plasticity'] = inhibitory_plasticity
-    # Per-postsynaptic-neuron target incoming-weight sum, captured from the initial
-    # (rescaled, clipped) weights. Held fixed as the synaptic-scaling target so STDP
-    # redistributes rather than inflates each neuron's total excitatory drive.
+    # For each excitatory neuron, this is the total incoming E->E weight at
+    # the start (after clipping and pool rescaling). It's kept fixed as the
+    # synaptic-scaling target, so that STDP redistributes weight among a
+    # neuron's synapses rather than inflating its total excitatory input.
     result['W_target_EE'] = compute_target_insums(j_arr, w_rescaled, p['N_exc'])
     result['input_group'] = input_group
     result['syn_input_E'] = syn_input_E

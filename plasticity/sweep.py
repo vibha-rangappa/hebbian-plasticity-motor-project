@@ -1,22 +1,36 @@
 # plasticity/sweep.py
 
 """
-Inhibitory-plasticity parameter sweep.
+This script sweeps over the inhibitory plasticity parameters and runs a
+training job for each combination.
 
-The Part 3 pilot showed the population geometry (PR, prep/exec orthogonality) is driven by
-inhibitory STDP, not E->E STDP. This sweep maps the plasticity-space -> geometry-space
-relationship (Q2) over the inhibitory parameters that actually move the geometry:
+An earlier pilot run (Part 3) showed that the population-level geometry
+(participation ratio, and how separate the "prep" and "exec" subspaces are)
+is driven by the inhibitory STDP rule, not by the E->E STDP rule. This sweep
+maps out how that geometry changes (Q2) as we vary the inhibitory parameters
+that actually seem to matter:
 
-    rho0       target E rate (the E/I balance setpoint)
-    eta_istdp  inhibitory learning rate
-    tau_istdp  inhibitory trace window
+    rho0       the target firing rate for excitatory neurons (sets the E/I balance point)
+    eta_istdp  the inhibitory learning rate
+    tau_istdp  the time window of the inhibitory STDP trace
 
-plus a binary E->E STDP on/off axis to document its null across the inhibitory landscape.
+It also varies E->E STDP on vs off, just to confirm it stays a null effect
+across this whole inhibitory parameter range.
 
-Each grid point is run as an isolated `train.py` subprocess (no Brian2 state bleed) with a
-label encoding its coordinates, into a shared results dir. Runs are resumable: a point
-whose output .h5 already exists is skipped. Default is serial (--n_jobs 1) to avoid Brian2
-cython-cache contention; parallel is available but compiles can collide, so use with care.
+Every run uses --exec_mode autonomous. In 'sustained' mode, the input during
+the execution phase clamps the network's state, so jPCA rotation can't show
+up at all, by construction (see center_out_task.py). 'autonomous' mode is the
+only one where all three measurements (participation ratio, jPCA, subspace
+orthogonality) are meaningful, so this sweep covers the full set of questions
+(Q1 through Q3), not just participation ratio and orthogonality.
+
+Each grid point runs as its own `train.py` subprocess, so it gets a clean
+Brian2 state, with a label encoding its parameter values, writing into a
+shared results folder. Runs can be resumed: if a point's output .h5 file
+already exists, that point is skipped. By default this runs points one at a
+time (--n_jobs 1) to avoid Brian2's compiled-code cache from being written to
+by multiple processes at once. Running in parallel is possible but those
+cache collisions can happen, so use it carefully.
 
 Usage:
     PYTHONPATH=. python plasticity/sweep.py --grid quick      # 9-point validation
@@ -32,17 +46,19 @@ import os
 import subprocess
 import sys
 
-# Parameter grids. eta in amps, tau in seconds, rho0 in Hz.
+# Parameter grids. eta is in amps, tau is in seconds, rho0 is in Hz.
 GRIDS = {
-    # Small validation grid: confirm the inhibitory params produce a readable gradient
-    # and estimate per-run cost before committing to the full map.
+    # A small grid to check that the inhibitory parameters produce a clear,
+    # readable trend, and to get a sense of how long each run takes before
+    # committing to the full map.
     'quick': {
         'rho0': [2.0, 3.0, 5.0],
         'eta_istdp': [0.5e-12, 1.0e-12, 2.0e-12],
         'tau_istdp': [20e-3],
         'ee': ['on'],
     },
-    # Full map: 4 x 4 x 3 inhibitory grid, crossed with the E->E null axis (on/off).
+    # The full map: a 4 x 4 x 3 grid over the inhibitory parameters, each
+    # combination run with E->E STDP both on and off.
     'full': {
         'rho0': [1.5, 3.0, 5.0, 8.0],
         'eta_istdp': [0.5e-12, 1.0e-12, 2.0e-12, 4.0e-12],
@@ -53,7 +69,7 @@ GRIDS = {
 
 
 def point_label(rho0, eta, tau, ee):
-    """Filesystem-safe, parseable label encoding a grid point's coordinates."""
+    """Build a short, file-name-safe label that encodes a grid point's parameter values."""
     return f"rho{rho0:g}_eta{eta * 1e12:g}_tau{tau * 1e3:g}_ee{ee}"
 
 
@@ -72,6 +88,7 @@ def run_point(rho0, eta, tau, ee, args):
     cmd = [
         sys.executable, 'plasticity/train.py',
         '--condition', 'seeded',
+        '--exec_mode', 'autonomous',
         '--inhibitory_plasticity', 'on',
         '--weight_norm', 'on',
         '--ee_plasticity', ee,

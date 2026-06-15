@@ -1,19 +1,21 @@
 # geometry/run_geometry.py
 
 """
-Driver for Part 3 geometry analysis (spec section 6).
+This is the main script that runs the full Part 3 geometry analysis (spec section 6).
 
-Discovers the training_*.h5 snapshot files, runs the preprocessing chokepoint ONCE per
-(condition, epoch), computes all three observables with their matched nulls, and writes a
-single tidy/long results table. The same code ingests the full 64 x 4 x 8 sweep with no
-change -- epochs and conditions are discovered, never hardcoded.
+It finds all the training_*.h5 snapshot files, runs the shared preprocessing step
+once for each (condition, epoch) pair, computes all three observables (PR, jPCA,
+orthogonality) along with their chance-level comparisons, and writes everything out
+to one tidy results table (one row per metric). The same script works whether you're
+looking at one run or the full 64 x 4 x 8 sweep, with no changes needed, since
+conditions and epochs are discovered from the files rather than hardcoded.
 
 Usage:
     PYTHONPATH=. python geometry/run_geometry.py
     PYTHONPATH=. python geometry/run_geometry.py --n_shuffle 20 --n_cv 20
 
-Output: geometry/results/geometry_metrics.csv (overwritten each run -- idempotent, no
-duplicate rows accumulate).
+Output: geometry/results/geometry_metrics.csv. This file is overwritten every run,
+so running the script again just regenerates it cleanly. No duplicate rows pile up.
 """
 
 import argparse
@@ -38,7 +40,8 @@ N_EXC = 800
 
 
 def discover_snapshots(results_dir):
-    """Map condition name -> (h5_path, sorted list of epoch ints), from training_*.h5."""
+    """Scan for training_*.h5 files and build a map from condition name to
+    (path to the file, sorted list of epoch numbers found inside it)."""
     out = {}
     for path in sorted(glob.glob(os.path.join(results_dir, 'training_*.h5'))):
         cond = re.match(r'training_(.+)\.h5', os.path.basename(path)).group(1)
@@ -51,9 +54,13 @@ def discover_snapshots(results_dir):
 
 def jpca_shuffle_floor(pre, k, n_shuffle, seed):
     """
-    jPCA R^2 chance floor: re-form condition averages under permuted trial->direction
-    labels (reusing the already-smoothed per-trial rates -- no re-smoothing) and refit.
-    Returns (mean, std) of the shuffled r2_skew.
+    Estimate the chance level for jPCA's R^2 by shuffling: randomly reassign each
+    trial to a different direction label, recompute the condition averages from
+    these shuffled labels (reusing the rates we already smoothed, no need to
+    re-smooth), and refit jPCA. Repeat n_shuffle times.
+
+    Returns (mean, std) of the resulting r2_skew values, i.e. what R^2 looks like
+    when there's no real condition structure.
     """
     rng = np.random.default_rng(seed)
     rates = pre['trial_rate_exec']
@@ -68,10 +75,12 @@ def jpca_shuffle_floor(pre, k, n_shuffle, seed):
 
 def cv_subspace_stability(pre, window, k, n_cv, seed):
     """
-    Trial-split overfitting guard: mean principal angle (deg) between the top-k subspaces
-    estimated from two disjoint trial folds, averaged over n_cv random splits. A small
-    angle means the subspace generalizes across trials; an angle near the random-subspace
-    null means it is overfit to trial noise.
+    Check whether the top-k PC subspace is overfit to trial noise. Split the trials
+    into two random halves, find the top-k subspace from each half separately, and
+    measure the angle (in degrees) between the two subspaces. Repeat for n_cv random
+    splits and average. A small angle means the subspace is stable and generalizes
+    across trials. An angle close to the random-subspace null (chance level) means
+    it's basically just fitting trial-to-trial noise.
     """
     rng = np.random.default_rng(seed)
     rates = pre['trial_rate_prep'] if window == 'prep' else pre['trial_rate_exec']
@@ -87,7 +96,8 @@ def cv_subspace_stability(pre, window, k, n_cv, seed):
 
 
 def analyze_snapshot(h5_path, condition, epoch, n_shuffle, n_cv, k_list, seed):
-    """Compute every observable for one snapshot; return a list of tidy row dicts."""
+    """Compute every observable for one snapshot, and return them as a list of
+    tidy row dicts (one row per metric, ready to write to the CSV)."""
     snap = load_snapshot(h5_path, epoch)
     pre = preprocess_snapshot(snap, n_exc=N_EXC, downsample_ms=DOWNSAMPLE_MS)
     rows = []
@@ -96,11 +106,11 @@ def analyze_snapshot(h5_path, condition, epoch, n_shuffle, n_cv, k_list, seed):
         rows.append({'condition': condition, 'epoch': epoch, 'window': window,
                      'observable': observable, 'k': k, 'metric': metric, 'value': value})
 
-    # --- Participation ratio (both windows) ---
+    # --- Participation ratio, for both the prep and exec windows ---
     row('pr', 'prep', '', 'participation_ratio', participation_ratio(pre['X_prep']))
     row('pr', 'exec', '', 'participation_ratio', participation_ratio(pre['X_exec']))
 
-    # --- jPCA (exec window) at each k, with full triangulation ---
+    # --- jPCA on the exec window, for each k, with the full set of sanity checks ---
     for k in k_list:
         j = jpca_analysis(pre['X_exec'], k=k)
         sh_mean, sh_std = jpca_shuffle_floor(pre, k, n_shuffle, seed + k)
@@ -113,7 +123,7 @@ def analyze_snapshot(h5_path, condition, epoch, n_shuffle, n_cv, k_list, seed):
                      ('r2_above_shuffle', j['r2_skew'] - sh_mean)]:
             row('jpca', 'exec', k, m, v)
 
-    # --- Prep/exec subspace orthogonality (k=6) ---
+    # --- Prep vs exec subspace orthogonality, using the top 6 PCs ---
     o = orthogonality_analysis(pre['X_prep'], pre['X_exec'], k=6, n_boot=1000, seed=seed)
     for m, v in [('mean_angle_deg', o['mean_angle_deg']),
                  ('null_mean_deg', o['null_mean_deg']),
@@ -121,7 +131,7 @@ def analyze_snapshot(h5_path, condition, epoch, n_shuffle, n_cv, k_list, seed):
                  ('z_vs_null', o['z_vs_null'])]:
         row('orthogonality', 'prep_vs_exec', 6, m, v)
 
-    # --- Trial-split CV stability (overfitting guard), k=6, both windows ---
+    # --- Trial-split CV stability check (k=6), for both prep and exec windows ---
     null_ang = np.degrees(random_subspace_null(N_EXC, k=6, n_boot=200, seed=seed).mean())
     for window in ('prep', 'exec'):
         cv_ang = cv_subspace_stability(pre, window, k=6, n_cv=n_cv, seed=seed)
@@ -165,7 +175,9 @@ def main():
 
 
 def _print_summary(rows):
-    """Console summary, foregrounding the epoch-0 seeded-vs-control pipeline check."""
+    """Print a quick summary to the console, with extra focus on the epoch-0
+    seeded-vs-control check (a sanity check that the pipeline is working before
+    learning has had any effect)."""
     def get(cond, epoch, observable, metric, window=None, k=6):
         for r in rows:
             if (r['condition'] == cond and r['epoch'] == epoch and

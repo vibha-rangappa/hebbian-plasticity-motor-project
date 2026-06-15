@@ -1,16 +1,20 @@
 # geometry/sweep_map.py
 
 """
-Build the plasticity-space -> geometry-space map (Q2) from a parameter sweep.
+This script builds the "plasticity parameters -> geometry results" map for Q2, using the
+output of a parameter sweep.
 
-Joins each sweep run's inhibitory-parameter coordinates (read from its HDF5 provenance)
-with the geometry observables (read from the tidy geometry metrics CSV), producing:
+For each sweep run, it reads the inhibitory plasticity parameters (saved as HDF5
+metadata/provenance when the run was trained) and joins them with the geometry results
+for that run (from the tidy geometry metrics CSV). The output is:
 
-  - a tidy map CSV: one row per (run, epoch) with coordinates + observables
-  - heatmaps of an observable (default PR_exec) over (rho0, eta_istdp) at the final
-    epoch, faceted by tau_istdp and the E->E on/off axis
+  - a tidy CSV: one row per (run, epoch), with both the plasticity parameter values and
+    the geometry observable values
+  - heatmaps showing one observable (PR_exec by default) across the (rho0, eta_istdp)
+    grid at the final training epoch, with separate panels for each combination of
+    tau_istdp and whether E->E plasticity is on or off
 
-Usage (after running the sweep and geometry on its results):
+Usage (after running the sweep and the geometry analysis on its output):
     PYTHONPATH=. python geometry/sweep_map.py \
         --sweep_dir plasticity/results_sweep \
         --geometry_csv geometry/results/geometry_metrics_sweep.csv
@@ -32,7 +36,7 @@ FIG_DIR = 'geometry/results/figures'
 
 
 def read_run_coords(sweep_dir):
-    """label -> dict of inhibitory coordinates, from each run's /training_params attrs."""
+    """For each run, read its inhibitory plasticity parameters from /training_params attrs in its HDF5 file. Returns a dict mapping run label to a dict of those parameter values."""
     coords = {}
     for path in sorted(glob.glob(os.path.join(sweep_dir, 'training_*.h5'))):
         label = re.match(r'training_(.+)\.h5', os.path.basename(path)).group(1)
@@ -48,7 +52,7 @@ def read_run_coords(sweep_dir):
 
 
 def read_geometry(csv_path):
-    """(condition, epoch, observable, metric, window, k) -> value."""
+    """Read the geometry metrics CSV into a dict keyed by (condition, epoch, observable, metric, window, k), with the metric value as the value."""
     out = {}
     for r in csv.DictReader(open(csv_path)):
         key = (r['condition'], int(r['epoch']), r['observable'], r['metric'],
@@ -90,8 +94,8 @@ def write_map_csv(rows, out_csv):
 
 
 def plot_heatmaps(rows, metric='pr_exec'):
-    """Heatmap of `metric` over (rho0, eta_istdp) at the final epoch, faceted by
-    (tau_istdp, ee_plasticity)."""
+    """Make a heatmap of `metric` over (rho0, eta_istdp) at the final epoch, with a
+    separate panel for each combination of (tau_istdp, ee_plasticity)."""
     final_ep = max(r['epoch'] for r in rows)
     sel = [r for r in rows if r['epoch'] == final_ep]
     taus = sorted({r['tau_istdp'] for r in sel})

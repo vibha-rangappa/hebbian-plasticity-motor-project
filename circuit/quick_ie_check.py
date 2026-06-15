@@ -1,4 +1,10 @@
-"""Quick 4-seed check of ws=0.65,0.70,0.75 — predicted to give I/E ≈ 2.5-3x."""
+"""
+This is a quick check, run with 4 different random seeds, of w_scale_II
+values 0.65, 0.70, and 0.75 (how strong inhibitory-to-inhibitory connections
+are). We predicted these values should give an inhibitory-to-excitatory
+firing rate ratio (I/E) of roughly 2.5 to 3, which is the kind of balance seen
+in real cortical circuits.
+"""
 import numpy as np, sys
 from brian2 import *
 prefs.codegen.target = 'numpy'
@@ -20,9 +26,9 @@ def pairwise_corr(spike_mon, N, t_start, t_end, n_pairs=150, dt=0.002):
     return float(np.mean(corrs)) if corrs else float('nan')
 
 SEEDS = [42, 0, 1, 7]
-T_SIM, T_START = 20.0, 10.0  # shorter runs for speed, use [10-20s] window
+T_SIM, T_START = 20.0, 10.0  # use shorter 20 s runs for speed, only look at the 10-20 s window
 
-# Key test: does ws=0.65-0.75 give I/E ≈ 2-3?
+# The main question: does w_scale_II = 0.65-0.75 give an I/E ratio of about 2-3?
 combos = [
     (6.25, 0.065, 0.60),
     (6.25, 0.065, 0.65),

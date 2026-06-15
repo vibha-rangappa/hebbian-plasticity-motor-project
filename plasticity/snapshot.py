@@ -1,23 +1,33 @@
 # plasticity/snapshot.py
 
 """
-HDF5 read/write for STDP training snapshots (spec section 6).
+This file handles reading and writing the HDF5 files that store STDP
+training snapshots: the connection weights, spike data, and summary
+statistics taken at various points during a training run.
 
-Schema:
-    /network, /weights, /validation    — copied from the circuit baseline via
-        copy_baseline_provenance(), so each output file is self-contained
-    /training_params                   — attrs written by save_training_params():
+Layout of the HDF5 file:
+    /network, /weights, /validation  : copied over from the circuit baseline
+        by copy_baseline_provenance(), so each output file is self-contained
+        and you can tell what baseline network it came from.
+    /training_params  : attributes (metadata) written by save_training_params():
         p_cross, seed, tau_plus, tau_minus, A_plus, A_minus, w_max, n_input,
-        r_max, t_burn_in
-    /snapshots/epoch_{N}/
-        W_EE/{data, row, col, shape}   — COO, row=postsynaptic, col=presynaptic
-        spike_times_ms                 — float32, ms within trial
-        spike_neuron_idx                — int32, 0..N_exc-1 = E, N_exc.. = input
-        spike_trial_idx                  — int32, 0..n_test_trials-1
-        trial_labels                     — int32, direction index per test trial
-    /monitoring/
-        epochs, mean_rate_E, mean_w_EE, frac_w_max, mean_cv_isi  — resizable,
-        one row appended per save_snapshot() call
+        r_max, t_burn_in, and more.
+    /snapshots/epoch_{N}/  : one group per snapshot, where N is the epoch
+        (trial count) the snapshot was taken at.
+        W_EE/{data, row, col, shape}  : the E->E weight matrix in sparse
+            "COO" format (a list of nonzero entries). row = postsynaptic
+            neuron, col = presynaptic neuron.
+        spike_times_ms  : float32 array, spike time in milliseconds,
+            measured from the start of that spike's trial.
+        spike_neuron_idx  : int32 array, which neuron fired. Indices
+            0..N_exc-1 are excitatory neurons, N_exc and above are input
+            neurons.
+        spike_trial_idx  : int32 array, which test trial (0..n_test_trials-1)
+            each spike happened in.
+        trial_labels  : int32 array, the direction index for each test trial.
+    /monitoring/  : a set of arrays (epochs, mean_rate_E, mean_w_EE,
+        frac_w_max, mean_cv_isi) that grow over time, one new row added
+        each time save_snapshot() is called.
 """
 
 import h5py
@@ -29,15 +39,18 @@ _MONITORING_KEYS = ('mean_rate_E', 'mean_w_EE', 'frac_w_max', 'mean_cv_isi')
 
 def save_snapshot(h5_path, epoch, W_EE_coo, spike_data, trial_labels, monitoring_metrics):
     """
-    Append one training snapshot to h5_path (created if it doesn't exist).
+    Add one new training snapshot to h5_path (the file is created first if it
+    doesn't exist yet).
 
-    W_EE_coo : dict with 'data' (amps), 'row' (postsynaptic idx), 'col'
-        (presynaptic idx), 'shape' — same convention as circuit/run_baseline.py's
-        save_baseline.
-    spike_data : dict with 'spike_times_ms', 'spike_neuron_idx', 'spike_trial_idx'.
+    W_EE_coo : dict with 'data' (weights, in amps), 'row' (postsynaptic
+        neuron index), 'col' (presynaptic neuron index), and 'shape'. This
+        is the same format used by circuit/run_baseline.py's save_baseline.
+    spike_data : dict with 'spike_times_ms', 'spike_neuron_idx',
+        'spike_trial_idx'.
     trial_labels : array of direction indices (0..n_directions-1), one per
         test trial.
-    monitoring_metrics : dict with the four keys in _MONITORING_KEYS.
+    monitoring_metrics : dict containing the four keys listed in
+        _MONITORING_KEYS.
     """
     with h5py.File(h5_path, 'a') as f:
         grp = f.create_group(f'snapshots/epoch_{epoch}')
@@ -98,7 +111,7 @@ def load_snapshot(h5_path, epoch):
 
 
 def load_monitoring(h5_path):
-    """Load /monitoring/ as a dict of numpy arrays, keyed by dataset name."""
+    """Load the /monitoring/ group as a dict of numpy arrays, keyed by dataset name."""
     with h5py.File(h5_path, 'r') as f:
         mgrp = f['monitoring']
         return {k: mgrp[k][:] for k in mgrp.keys()}
@@ -106,9 +119,11 @@ def load_monitoring(h5_path):
 
 def copy_baseline_provenance(h5_path, baseline_h5_path):
     """
-    Copy /network, /weights, /validation from the circuit baseline into
-    h5_path, so each training output file is self-contained (spec section 6).
-    Call once per file, before any snapshots are saved.
+    Copy the /network, /weights, and /validation groups from the circuit
+    baseline file into h5_path, so each training output file is
+    self-contained (you can tell what baseline it started from just by
+    looking at this one file). Call this once per file, before any snapshots
+    are saved.
     """
     with h5py.File(baseline_h5_path, 'r') as src, h5py.File(h5_path, 'a') as dst:
         for group_name in ('network', 'weights', 'validation'):
@@ -117,10 +132,11 @@ def copy_baseline_provenance(h5_path, baseline_h5_path):
 
 def save_training_params(h5_path, params, p_cross, seed, plasticity_on=True):
     """
-    Write /training_params attrs (spec section 6): p_cross, STDP params, task
-    input params, the trial-sequence seed, and burn-in duration. Also records
-    the execution regime (exec_mode) and whether STDP was on, so each output
-    file self-documents which experimental condition produced it.
+    Write the /training_params attributes: p_cross, STDP parameters, task
+    input parameters, the trial-sequence seed, and the burn-in duration. Also
+    records the execution mode (exec_mode) and whether STDP was on, so each
+    output file documents on its own which experimental condition produced
+    it.
     """
     with h5py.File(h5_path, 'a') as f:
         grp = f.require_group('training_params')
@@ -130,8 +146,9 @@ def save_training_params(h5_path, params, p_cross, seed, plasticity_on=True):
         grp.attrs['plasticity_on'] = bool(plasticity_on)
         grp.attrs['weight_norm'] = bool(params.get('weight_norm', True))
         grp.attrs['inhibitory_plasticity'] = bool(params.get('inhibitory_plasticity', False))
-        # Inhibitory-plasticity params (swept axes); recorded so the sweep aggregation
-        # can read each run's coordinates straight from its file.
+        # These are the inhibitory-plasticity parameters that get varied across
+        # the sweep. We record their values here so the sweep-aggregation code
+        # can read each run's settings directly from its own file.
         for k in ('rho0', 'eta_istdp', 'tau_istdp'):
             if k in params:
                 grp.attrs[k] = float(params[k])

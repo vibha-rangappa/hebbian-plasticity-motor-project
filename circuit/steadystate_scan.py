@@ -1,11 +1,17 @@
-"""20-second runs to find the point where STEADY-STATE rate >= 2 Hz AND CV >= 0.8."""
+"""
+This script runs 20-second simulations for a few parameter combinations to
+find one where, once the network has settled down (steady state, not the
+initial transient), the firing rate is at least 2 Hz AND the CV-ISI is at
+least 0.8. Both an early window and a late window are checked so we can see
+how the activity changes over time and whether it has actually settled.
+"""
 import numpy as np, sys
 from brian2 import *
 prefs.codegen.target = 'numpy'
 from circuit.network import build_network, DEFAULT_PARAMS
 from circuit.run_baseline import compute_cv_isi, _extract_spike_trains
 
-# Test a range of nu_ext values at g_EI=0.055 nA
+# Try a range of nu_ext values, mostly with g_EI=0.055 nA
 combos = [(4.4, 0.055), (5.0, 0.055), (5.5, 0.055), (6.0, 0.055),
           (5.0, 0.057), (5.0, 0.058), (5.5, 0.057)]
 
@@ -21,7 +27,7 @@ for nu_ext, g_ei in combos:
 
     trains_E = _extract_spike_trains(spike_mon, 800, 20.0)
 
-    # Rates in different windows
+    # Firing rates in two different time windows
     spk_0to5  = sum(1 for t in spike_mon.t/second if t < 5.0)
     spk_10to20 = sum(1 for t in spike_mon.t/second if 10.0 <= t < 20.0)
     rate_early = spk_0to5  / (800 * 5.0)

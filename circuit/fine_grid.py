@@ -1,3 +1,13 @@
+"""
+This is a one-off calibration scan, a fine-grained sweep over nu_ext
+(background input rate) and g_EI (inhibitory weight) to find which
+combinations land the network in the asynchronous irregular (AI) regime:
+firing rate 2-10 Hz and CV-ISI (irregularity measure) between 0.8 and 1.2.
+
+For each (nu_ext, g_EI) pair it runs a short 3-second simulation, then
+prints the E and I firing rates, the I/E rate ratio, and the CV-ISI, with
+an "AI" flag marking combinations that meet the target.
+"""
 import numpy as np
 import sys
 from brian2 import *

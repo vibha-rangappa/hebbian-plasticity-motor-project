@@ -1,4 +1,9 @@
-"""Test w_scale_II=1.0 with nu_ext=6.25 Hz — the balanced AI regime."""
+"""
+This script tests w_scale_II=1.0 (full-strength inhibitory-to-inhibitory
+connections) together with nu_ext=6.25 Hz, to see whether this combination
+lands in the balanced AI regime. It also tries a few nearby combinations
+(different g_EI, nu_ext, w_scale_II, and seeds) for comparison.
+"""
 import numpy as np, sys
 from brian2 import *
 prefs.codegen.target = 'numpy'

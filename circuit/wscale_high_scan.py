@@ -1,4 +1,10 @@
-"""Scan w_scale_II=0.60-0.80 — higher I-I feedback should bring I/E toward 2-3x."""
+"""
+This script scans w_scale_II values from 0.60 to 0.80 (how strong
+inhibitory-to-inhibitory connections are). The idea is that stronger I-I
+feedback should push the inhibitory-to-excitatory firing rate ratio (I/E)
+toward the 2-3x range seen in real cortical circuits. Each combination is
+tested with 4 random seeds and checked against the AI-regime criteria.
+"""
 import numpy as np, sys
 from brian2 import *
 prefs.codegen.target = 'numpy'
@@ -22,7 +28,8 @@ def pairwise_corr(spike_mon, N, t_start, t_end, n_pairs=200, dt=0.002):
 SEEDS = [42, 0, 1, 7]
 T_SIM, T_START = 25.0, 15.0
 
-# Focus: ws 0.60-0.80 with most promising g/nu combos
+# Focus on w_scale_II from 0.60 to 0.80, combined with the most promising
+# g_EI and nu_ext combinations found so far.
 combos = [
     (6.25, 0.065, 0.60), (6.25, 0.065, 0.65), (6.25, 0.065, 0.70),
     (6.25, 0.065, 0.75), (6.25, 0.065, 0.80),

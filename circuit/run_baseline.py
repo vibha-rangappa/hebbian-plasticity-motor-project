@@ -1,24 +1,27 @@
 # circuit/run_baseline.py
 
 """
-Validation runner for the balanced E/I circuit (Hebbian Plasticity / Manifold
-Sculptor project). Builds the network, runs a steady-state validation, and
-saves the baseline network state to HDF5.
+This script builds the balanced E/I circuit, runs it for a while, and checks
+whether it is behaving the way we want before we save it as the "baseline"
+network that later scripts (plasticity training, etc.) start from.
 
 Usage:
     python circuit/run_baseline.py --nu_ext 6.25 --g_EI 0.065 --w_scale_II 0.5
 
-Runs a 30 s simulation (default), auto-evaluates checks 3, 4, 7 in the
-LAST 10 s window (steady state after transient decays), saves figures for
-visual checks 1, 2, 5, 6, writes baseline_network.h5 if all quantitative
-checks pass.
+By default it runs a 30 s simulation. It automatically checks 3 numbers
+(checks 3, 4, 7 below) using only the LAST 10 seconds of the run, once the
+network has settled down. It also saves a few figures for visual checks
+(1, 2, 5, 6). If all the automatic checks pass, it writes the network state
+to baseline_network.h5.
 
-Why 30 s / last-10 s window:
-  The network needs ~15 s to reach steady state from the random initial
-  conditions (V uniformly in [V_reset, V_th]).  CV-ISI evaluated over the
-  full 5 s window captures the transient (CV ≈ 0.75) rather than the true
-  irregular steady state (CV ≈ 0.80–0.82).  Using [20, 30] s for metrics
-  ensures the results reflect the stable operating point.
+Why 30 s, and why only look at the last 10 s:
+  Starting from random initial voltages (each neuron starts at a random
+  voltage between V_reset and V_th), the network takes about 15 seconds to
+  settle into its steady firing pattern. If you measure the irregularity of
+  firing (CV-ISI) over the whole run, the early transient pulls the number
+  down (CV around 0.75) compared to the true steady-state value
+  (CV around 0.80-0.82). Looking only at the [20, 30] s window avoids this
+  and gives a measurement of the network's actual stable operating point.
 """
 
 import argparse
@@ -27,7 +30,7 @@ import sys
 
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')  # non-interactive backend — saves to file without a display
+matplotlib.use('Agg')  # use a non-interactive backend so plots can be saved to file without a display
 import matplotlib.pyplot as plt
 import h5py
 import scipy.sparse
@@ -38,8 +41,10 @@ from circuit.network import build_network, DEFAULT_PARAMS
 
 
 # ---------------------------------------------------------------------------
-# Analysis functions — operate on plain dicts of spike times, no Brian2 deps.
-# spike_trains : dict[int, np.ndarray]  — neuron_idx → spike times in seconds
+# Analysis functions. These work on plain dicts of spike times, they don't
+# need Brian2 at all.
+# spike_trains : dict[int, np.ndarray]  -- maps neuron index to an array of
+#                                           spike times in seconds
 # ---------------------------------------------------------------------------
 
 def compute_cv_isi(
@@ -49,14 +54,21 @@ def compute_cv_isi(
     min_spikes: int = 20,
 ) -> tuple:
     """
-    Compute per-neuron CV-ISI and the population mean.
+    Compute the CV-ISI (coefficient of variation of inter-spike intervals)
+    for each neuron, and the average across the population.
 
-    Only neurons with >= min_spikes spikes in [t_start, t_end] are included.
+    CV-ISI measures how irregular a neuron's firing is: CV near 0 means very
+    regular (clock-like) spiking, CV near 1 means irregular (Poisson-like)
+    spiking.
+
+    Only neurons that fired at least min_spikes times in [t_start, t_end]
+    are included, so the CV estimate isn't based on too few spikes.
 
     Returns
     -------
-    per_neuron : dict {neuron_idx: float}   — CV for each qualifying neuron
-    mean_cv    : float                       — population mean (nan if none qualify)
+    per_neuron : dict {neuron_idx: float}   -- CV for each neuron that qualifies
+    mean_cv    : float                       -- average over the population
+                                                 (nan if no neuron qualifies)
     """
     per_neuron = {}
     for idx, times in spike_trains.items():
@@ -84,10 +96,16 @@ def compute_pairwise_corr(
     seed: int = 42,
 ) -> float:
     """
-    Compute mean Pearson correlation of spike-count vectors across random pairs.
+    Pick random pairs of neurons, turn each neuron's spikes into a binned
+    spike-count time series, and compute the Pearson correlation between
+    each pair. Return the average correlation across all pairs.
 
-    Pairs are drawn with a fixed seed so results are reproducible.
-    Returns mean Pearson r (nan if fewer than 2 neurons).
+    This tells us how correlated the neurons' activity is. We want this to
+    be low (close to 0), since highly correlated firing is not the
+    asynchronous irregular pattern we're aiming for.
+
+    The pairs are picked using a fixed random seed, so results are the same
+    every time you run this. Returns nan if there are fewer than 2 neurons.
     """
     dt = bin_ms * 1e-3
     n_bins = int((t_end - t_start) / dt)
@@ -98,7 +116,7 @@ def compute_pairwise_corr(
     if n < 2:
         return float('nan')
 
-    # Build spike-count matrix: shape (n_neurons, n_bins)
+    # Build a matrix of spike counts: one row per neuron, one column per time bin
     counts = np.zeros((n, n_bins), dtype=np.float32)
     for row, idx in enumerate(indices):
         times = np.asarray(spike_trains[idx])
@@ -108,7 +126,7 @@ def compute_pairwise_corr(
     rng = np.random.default_rng(seed)
     n_pairs = min(n_pairs, n * (n - 1) // 2)
 
-    # Draw unique pairs without replacement
+    # Pick random pairs of neurons, without picking the same pair twice
     pairs = set()
     max_attempts = n_pairs * 100
     attempts = 0
@@ -134,10 +152,12 @@ def compute_power_spectrum(
     dt_ms: float = 0.1,
 ) -> tuple:
     """
-    Compute the power spectrum of the summed population firing rate.
+    Compute the power spectrum of the whole population's firing rate over time.
 
-    Spikes from all neurons are summed into a fine-bin histogram, smoothed
-    with a Gaussian kernel, then FFT'd. Returns (frequencies_Hz, power).
+    Steps: add up spikes from all neurons into a histogram with very fine
+    time bins, smooth that histogram with a Gaussian filter, then take the
+    Fourier transform (FFT) to see which frequencies are present.
+    Returns (frequencies_Hz, power).
     """
     dt = dt_ms * 1e-3
     n_bins = int((t_end - t_start) / dt)
@@ -172,17 +192,22 @@ def save_baseline(
     seed: int,
 ) -> None:
     """
-    Write the validated baseline network to HDF5.
+    Write the network (now that it has passed validation) to an HDF5 file.
 
-    Weight matrices stored in COO format — reconstruct with:
+    The weight matrices are stored in COO sparse format (a list of nonzero
+    entries with row, column, and value). To turn one back into a normal
+    matrix:
         W = scipy.sparse.coo_matrix((data, (row, col)), shape=shape)
 
-    All parameters stored in SI units. Weights as float32 in amps.
+    All parameters are stored in SI units. Weights are stored as float32
+    numbers in amps.
     """
     def _save_sparse(grp, name: str, syn, tgt_size: int, src_size: int):
-        # Strip Brian2 units: divide by `amp` → float array in amps
+        # Remove Brian2's "amp" unit so we're left with plain numbers
         w_vals = np.array(syn.w / amp, dtype=np.float32)
-        # .j = postsynaptic (row), .i = presynaptic (col) → W[post, pre]
+        # syn.j is the target (postsynaptic) neuron -> becomes the row index
+        # syn.i is the source (presynaptic) neuron -> becomes the column index
+        # so W[row, col] = W[target, source]
         rows = np.array(syn.j[:], dtype=np.int32)
         cols = np.array(syn.i[:], dtype=np.int32)
         g = grp.create_group(name)
@@ -209,7 +234,7 @@ def save_baseline(
             ps.create_dataset(k, data=float(params[k]))
         ps.create_dataset('nu_ext', data=float(params['nu_ext']))
 
-        # /weights — COO sparse format, SI units (amps as float32)
+        # /weights: COO sparse format, SI units (amps as float32)
         wg = f.create_group('weights')
         Ne, Ni = params['N_exc'], params['N_inh']
         _save_sparse(wg, 'W_EE', net_objs['syn_EE'], Ne, Ne)
@@ -229,15 +254,15 @@ def save_baseline(
                           data=np.asarray(validation['raster_indices'], dtype=np.int32))
         vg.create_dataset('seed',      data=int(seed))
         vg.create_dataset('nu_ext_hz', data=float(params['nu_ext']))
-        vg.create_dataset('g_EI_nA',   data=float(params['g_EI'] / 1e-9))  # A → nA
+        vg.create_dataset('g_EI_nA',   data=float(params['g_EI'] / 1e-9))  # convert amps to nanoamps
 
 
 # ---------------------------------------------------------------------------
-# Plotting — save figures to disk for visual inspection
+# Plotting functions. These save figures to disk so we can look at them later.
 # ---------------------------------------------------------------------------
 
 def _extract_spike_trains(monitor, n_neurons: int, t_sim: float) -> dict:
-    """Convert Brian2 SpikeMonitor.spike_trains() to plain float arrays (seconds)."""
+    """Convert a Brian2 SpikeMonitor's spike_trains() into plain numpy arrays (seconds), with Brian2 units removed."""
     return {k: np.array(v / second)
             for k, v in monitor.spike_trains().items()}
 
@@ -245,8 +270,10 @@ def _extract_spike_trains(monitor, n_neurons: int, t_sim: float) -> dict:
 def plot_raster(net_objs: dict, params: dict, t_raster: float,
                 results_dir: str) -> tuple:
     """
-    Plot spike raster for up to 100 random E neurons over [0, t_raster].
-    Returns (raster_times, raster_indices) as float32/int32 arrays for HDF5.
+    Plot a spike raster (one dot per spike) for up to 100 randomly chosen
+    E neurons, over the time window [0, t_raster].
+    Returns (raster_times, raster_indices) as float32/int32 arrays, ready
+    to be saved into the HDF5 file.
     """
     rng = np.random.default_rng(42)
     Ne = params['N_exc']
@@ -264,7 +291,7 @@ def plot_raster(net_objs: dict, params: dict, t_raster: float,
     ax.scatter(rt, ri, s=0.5, c='k', alpha=0.5)
     ax.set_xlabel('Time (s)')
     ax.set_ylabel('Neuron index')
-    ax.set_title(f'Raster — {n_sample} E neurons, t=0–{t_raster} s')
+    ax.set_title(f'Raster, {n_sample} E neurons, t=0-{t_raster} s')
     ax.set_xlim(0, t_raster)
     fig.tight_layout()
     fig.savefig(os.path.join(results_dir, 'figures', 'raster.png'), dpi=150)
@@ -275,7 +302,7 @@ def plot_raster(net_objs: dict, params: dict, t_raster: float,
 
 def plot_firing_rate_hist(trains_E: dict, trains_I: dict, t_end: float,
                           results_dir: str) -> None:
-    """Histogram of per-neuron mean firing rates (E and I populations)."""
+    """Plot a histogram of each neuron's average firing rate, for the E and I populations separately."""
     rates_E = np.array([len(t[(t >= 0) & (t < t_end)]) / t_end
                         for t in trains_E.values()])
     rates_I = np.array([len(t[(t >= 0) & (t < t_end)]) / t_end
@@ -287,14 +314,14 @@ def plot_firing_rate_hist(trains_E: dict, trains_I: dict, t_end: float,
                 edgecolor='k', linewidth=0.3)
         ax.set_xlabel('Mean firing rate (Hz)')
         ax.set_ylabel('Count')
-        ax.set_title(f'{pop} population — mean={rates.mean():.1f} Hz')
+        ax.set_title(f'{pop} population, mean={rates.mean():.1f} Hz')
     fig.tight_layout()
     fig.savefig(os.path.join(results_dir, 'figures', 'firing_rate_hist.png'), dpi=150)
     plt.close(fig)
 
 
 def plot_isi_dist(trains_E: dict, t_end: float, results_dir: str) -> None:
-    """ISI distribution for 6 randomly selected E neurons."""
+    """Plot the distribution of inter-spike intervals (ISIs) for 6 randomly picked E neurons."""
     rng = np.random.default_rng(99)
     keys = list(trains_E.keys())
     sample_keys = rng.choice(keys, size=min(6, len(keys)), replace=False)
@@ -306,18 +333,18 @@ def plot_isi_dist(trains_E: dict, t_end: float, results_dir: str) -> None:
         if len(times) < 3:
             ax.set_visible(False)
             continue
-        isis = np.diff(np.sort(times)) * 1000  # s → ms
+        isis = np.diff(np.sort(times)) * 1000  # convert seconds to milliseconds
         cv = isis.std() / isis.mean() if len(isis) > 1 else float('nan')
         ax.hist(isis, bins=20, color='steelblue', edgecolor='k', linewidth=0.3)
         ax.set_xlabel('ISI (ms)')
-        ax.set_title(f'Neuron {idx} — CV={cv:.2f}')
+        ax.set_title(f'Neuron {idx}, CV={cv:.2f}')
     fig.tight_layout()
     fig.savefig(os.path.join(results_dir, 'figures', 'isi_dist.png'), dpi=150)
     plt.close(fig)
 
 
 def plot_power_spectrum(trains_E: dict, t_end: float, results_dir: str) -> None:
-    """Power spectrum of the E population firing rate."""
+    """Plot the power spectrum of the E population's firing rate."""
     freqs, power = compute_power_spectrum(trains_E, t_start=0.0, t_end=t_end,
                                           smooth_sigma_ms=5.0)
     fig, ax = plt.subplots(figsize=(8, 4))
@@ -332,12 +359,12 @@ def plot_power_spectrum(trains_E: dict, t_end: float, results_dir: str) -> None:
 
 
 def plot_weight_hists(net_objs: dict, results_dir: str) -> None:
-    """Log-scale histograms of initial weight distributions (all 4 synapse types)."""
+    """Plot histograms (log scale on the y-axis) of the initial weight distributions for all 4 synapse types."""
     fig, axes = plt.subplots(2, 2, figsize=(10, 8))
     syns = [('W_EE', 'syn_EE', 'C0'), ('W_EI', 'syn_EI', 'C1'),
             ('W_IE', 'syn_IE', 'C2'), ('W_II', 'syn_II', 'C3')]
     for ax, (name, key, color) in zip(axes.flat, syns):
-        w_nA = np.array(net_objs[key].w / amp) / 1e-9  # A → nA for readability
+        w_nA = np.array(net_objs[key].w / amp) / 1e-9  # convert amps to nanoamps so the numbers are easier to read
         ax.hist(w_nA, bins=40, color=color, edgecolor='k', linewidth=0.2)
         ax.set_xlabel('Weight (nA)')
         ax.set_title(name)
@@ -348,7 +375,7 @@ def plot_weight_hists(net_objs: dict, results_dir: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Validation workflow
+# Validation: run a set of checks on a finished simulation
 # ---------------------------------------------------------------------------
 
 def run_validation(
@@ -359,15 +386,16 @@ def run_validation(
     results_dir: str,
 ) -> tuple:
     """
-    Run all 7 validation checks after a completed simulation.
+    Run all 7 validation checks after a simulation has finished.
 
-    Auto-evaluates checks 3, 4, 7 (quantitative) in the LAST 10 s window.
-    Saves figures for checks 1, 2, 5, 6 (visual, human-inspected).
+    Checks 3, 4, and 7 are numeric and are checked automatically, using only
+    the LAST 10 seconds of the simulation. Checks 1, 2, 5, and 6 are visual:
+    this function saves figures for those so a person can look at them.
 
     Returns
     -------
-    validation : dict   — values for HDF5 /validation group
-    passed     : bool   — True iff checks 3, 4, 7 all pass
+    validation : dict   -- the values that get saved into the HDF5 /validation group
+    passed     : bool   -- True only if checks 3, 4, and 7 all pass
     """
     os.makedirs(os.path.join(results_dir, 'figures'), exist_ok=True)
 
@@ -377,44 +405,52 @@ def run_validation(
     trains_E = _extract_spike_trains(net_objs['spike_E'], Ne, t_sim)
     trains_I = _extract_spike_trains(net_objs['spike_I'], Ni, t_sim)
 
-    # Evaluate quantitative checks in the last 10 s (steady state after transient).
-    # The random initial conditions (V ~ U[V_reset, V_th]) create a transient burst
-    # in the first ~15 s.  CV and pairwise correlation computed in the last 10 s
-    # reflect the true steady-state operating point.
+    # Use only the last 10 seconds to compute the numeric checks, since
+    # that's the steady-state part of the run, after the initial transient
+    # has died down. The random starting voltages (each neuron starts
+    # somewhere between V_reset and V_th) cause a burst of activity in the
+    # first ~15 seconds. Computing CV-ISI and pairwise correlation only in
+    # this last window gives a true picture of the network's steady-state
+    # behavior.
     t_eval_start = max(0.0, t_sim - 10.0)
 
-    # ---- Check 3: CV-ISI (quantitative) ----
-    # min_spikes=20 ensures each neuron contributes 19+ ISIs to its CV estimate.
-    # With rate ≈ 3 Hz over a 10-s window ≈ 30 spikes per neuron, most neurons
-    # qualify.  Neurons below ~2 Hz are excluded — their small ISI samples would
-    # add noise without representing the population operating point.
+    # ---- Check 3: CV-ISI (a number we check automatically) ----
+    # min_spikes=20 means each neuron needs at least 19 ISIs to count toward
+    # its CV estimate. At around 3 Hz over a 10-second window, that's about
+    # 30 spikes per neuron, so most neurons qualify. Neurons firing below
+    # about 2 Hz are skipped, since too few spikes would give a noisy CV
+    # estimate that doesn't represent the population well.
     _, mean_cv = compute_cv_isi(trains_E, t_eval_start, t_sim, min_spikes=20)
     cv_pass = not np.isnan(mean_cv) and 0.8 <= mean_cv <= 1.2
 
-    # ---- Check 4: Pairwise correlation (quantitative) ----
+    # ---- Check 4: Pairwise correlation (a number we check automatically) ----
     mean_r = compute_pairwise_corr(trains_E, t_eval_start, t_sim,
                                     bin_ms=10.0, n_pairs=50, seed=seed)
     pairwise_pass = (not np.isnan(mean_r)) and mean_r < 0.05
 
-    # ---- Check 7: I/E rate ratio (quantitative) ----
-    # Compute rates in the steady-state window, not the full sim duration.
+    # ---- Check 7: I/E firing rate ratio (a number we check automatically) ----
+    # Compute firing rates using only the steady-state window, not the
+    # whole simulation.
     all_t_E = np.array(net_objs['spike_E'].t / second)
     all_t_I = np.array(net_objs['spike_I'].t / second)
     win = t_sim - t_eval_start
     mean_rate_E = float(np.sum(all_t_E >= t_eval_start) / (Ne * win))
     mean_rate_I = float(np.sum(all_t_I >= t_eval_start) / (Ni * win))
     rate_ratio  = mean_rate_I / mean_rate_E if mean_rate_E > 0 else float('nan')
-    # Target: I fires 2-6x faster than E (spec says 2-3x, widened from 2-5x).
-    # At nu_ext=7 Hz, I neurons receive more background drive, pushing the ratio
-    # toward 5-6× on some seeds (still healthy AI — CV and pairwise pass fine).
-    # PV interneurons in cortex fire 4-8× faster than pyramidal cells at rest.
+    # We want the I population to fire 2-6x faster than the E population.
+    # (The original target was 2-3x, then widened to 2-5x, now 2-6x.)
+    # With nu_ext = 7 Hz, the I neurons get more background input, which can
+    # push the ratio up toward 5-6x for some random seeds. That's still a
+    # healthy AI network, since CV and pairwise correlation pass fine.
+    # For reference: in real cortex, PV interneurons fire 4-8x faster than
+    # pyramidal (excitatory) cells at rest.
     rate_pass   = not np.isnan(rate_ratio) and 2.0 <= rate_ratio <= 6.0
 
-    # Also report the full-sim rate for reference.
+    # Also report the firing rate over the whole simulation, just for reference.
     mean_rate_E_full = net_objs['spike_E'].num_spikes / (Ne * t_sim)
     mean_rate_E_pass = 2.0 <= mean_rate_E <= 10.0
 
-    # ---- Print results ----
+    # ---- Print the results to the console ----
     width = 28
     print(f"\n{'=' * 55}")
     print(f"{'Validation results (steady-state window)':^55}")
@@ -432,7 +468,7 @@ def run_validation(
     print(f"{'Eval window:':<{width}} [{t_eval_start:.0f}–{t_sim:.0f}] s")
     print(f"{'=' * 55}\n")
 
-    # ---- Figures (checks 1, 2, 5, 6) ----
+    # ---- Save figures for the visual checks (1, 2, 5, 6) ----
     raster_t, raster_i = plot_raster(net_objs, params, t_raster=1.0,
                                       results_dir=results_dir)
     plot_firing_rate_hist(trains_E, trains_I, t_sim, results_dir)
@@ -445,8 +481,8 @@ def run_validation(
           "isi_dist.png, power_spectrum.png, weight_hists.png\n")
 
     validation = {
-        'mean_rate_E':        mean_rate_E,        # steady-state window
-        'mean_rate_I':        mean_rate_I,        # steady-state window
+        'mean_rate_E':        mean_rate_E,        # from the steady-state window
+        'mean_rate_I':        mean_rate_I,        # from the steady-state window
         'mean_CV_ISI':        mean_cv,
         'mean_pairwise_corr': mean_r,
         'raster_times':       raster_t,
@@ -458,7 +494,7 @@ def run_validation(
 
 
 # ---------------------------------------------------------------------------
-# CLI entry point
+# Command-line entry point
 # ---------------------------------------------------------------------------
 
 def main():
@@ -484,7 +520,7 @@ def main():
     params = {
         **DEFAULT_PARAMS,
         'nu_ext':     args.nu_ext,
-        'g_EI':       args.g_EI * 1e-9,  # CLI takes nA; store as A internally
+        'g_EI':       args.g_EI * 1e-9,  # command line gives nA, convert to A for internal use
         'w_scale_II': args.w_scale_II,
     }
 

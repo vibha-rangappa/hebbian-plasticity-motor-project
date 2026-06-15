@@ -1,5 +1,10 @@
-"""Full validation of candidate AI operating point: nu=6.25, g=0.065, ws=0.50.
-Runs 30-second sims across 4 seeds, checks all 7 criteria in the 20-30s window."""
+"""
+This script does a full check of one candidate AI operating point:
+nu_ext=6.25 Hz, g_EI=0.065 nA, w_scale_II=0.50. It runs 30-second simulations
+with 4 different random seeds and checks the AI-regime criteria (firing rate,
+CV-ISI, pairwise correlation, and the inhibitory-to-excitatory rate ratio) in
+the 20-30 s window, after the network has settled down.
+"""
 import numpy as np, sys
 from brian2 import *
 prefs.codegen.target = 'numpy'
@@ -8,10 +13,15 @@ from circuit.run_baseline import compute_cv_isi, _extract_spike_trains
 
 PARAMS = {**DEFAULT_PARAMS, 'nu_ext': 6.25, 'g_EI': 0.065e-9, 'w_scale_II': 0.50}
 T_SIM = 30.0
-T_CHECK_START = 20.0  # check in [20-30s] window
+T_CHECK_START = 20.0  # only look at the 20-30 s window
 
 def pairwise_corr(spike_mon, N, t_start, t_end, n_pairs=200, dt=0.002):
-    """Approx pairwise spike-train correlation (binned at dt, random pairs)."""
+    """
+    Estimate the average correlation between neurons' spike trains.
+    Spike times are first binned into small time windows (width dt), then
+    we pick random pairs of neurons and compute the correlation between
+    their binned spike counts.
+    """
     bins = np.arange(t_start, t_end + dt, dt)
     spk_i = spike_mon.i
     spk_t = spike_mon.t / second
@@ -55,7 +65,7 @@ for seed in seeds:
     c1 = 2 <= r_E <= 10
     c3 = 0.8 <= cv <= 1.2
     c4 = pc < 0.05
-    c5 = 2 <= ratio  # relaxed from 2-3 to 2+
+    c5 = 2 <= ratio  # originally wanted 2-3, now relaxed to "2 or more"
     checks = f"rate={'✓' if c1 else '✗'}  CV={'✓' if c3 else '✗'}  corr={'✓' if c4 else '✗'}  I/E={'✓' if c5 else '✗'}({'~' if 2<=ratio<=4 else ''})"
     passed = c1 and c3 and c4
     all_pass.append(passed)

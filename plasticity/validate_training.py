@@ -1,16 +1,19 @@
 # plasticity/validate_training.py
 
 """
-Post-training validation checks (spec section 7). Run after both conditions
-have completed:
+This script runs a set of sanity checks on a finished training run (spec
+section 7), to catch problems before moving on to the geometry analysis.
+
+Run it after both conditions have finished training:
 
     PYTHONPATH=. python plasticity/train.py --condition seeded
     PYTHONPATH=. python plasticity/train.py --condition control
     PYTHONPATH=. python plasticity/validate_training.py
 
-Each check_* function takes loaded snapshot/monitoring dicts (from
-plasticity.snapshot) and either returns None (pass) or raises AssertionError
-with a descriptive message.
+Each check_* function takes the snapshot/monitoring data loaded by
+plasticity.snapshot. If everything looks fine it just returns (no return
+value). If something looks wrong it raises an AssertionError with a message
+describing what failed.
 """
 
 import sys
@@ -22,7 +25,7 @@ from plasticity.snapshot import load_snapshot, load_monitoring
 
 
 def check_no_nans(snapshot, epoch):
-    """W_EE weights and spike times must not contain NaNs."""
+    """Make sure the W_EE weights and spike times don't contain any NaNs."""
     w = snapshot['W_EE_coo']['data']
     assert not np.any(np.isnan(w)), f"epoch {epoch}: NaN in W_EE data"
     assert not np.any(np.isnan(snapshot['spike_times_ms'])), \
@@ -30,7 +33,8 @@ def check_no_nans(snapshot, epoch):
 
 
 def check_monitoring_band(monitoring, condition_name, rate_max=30.0, frac_w_max_max=0.5):
-    """Abort criteria (spec 2.5) should hold at every recorded epoch."""
+    """Check that the training run stayed within the "should abort if this is
+    violated" limits (spec 2.5) at every recorded epoch."""
     for epoch, rate, frac in zip(monitoring['epochs'],
                                   monitoring['mean_rate_E'],
                                   monitoring['frac_w_max']):
@@ -43,12 +47,15 @@ def check_monitoring_band(monitoring, condition_name, rate_max=30.0, frac_w_max_
 
 
 def check_weight_movement(snap_epoch0, snap_epoch_n, epoch_n, atol=1e-12):
-    """STDP should have changed at least some E->E weights by epoch_n.
+    """Check that STDP has actually changed at least some E->E weights by epoch_n.
 
-    atol=1e-12 A (1 pA) is well below the smallest meaningful STDP step
-    (A_plus/A_minus ~ 1e-12 A) but far above float32 rounding noise at the
-    ~1e-10 A weight scale -- np.allclose's default atol=1e-8 would swamp
-    real differences at this scale and always report "unchanged".
+    atol=1e-12 A (1 pA) is much smaller than the smallest STDP step we'd
+    expect to matter (A_plus/A_minus are about 1e-12 A), but still much
+    bigger than ordinary float32 rounding noise at the weight scale we're
+    working at (around 1e-10 A). If we used np.allclose's default
+    atol=1e-8 instead, it would be bigger than the real weight differences
+    we're looking for, and this check would always say "unchanged" even when
+    STDP did something.
     """
     w0 = snap_epoch0['W_EE_coo']['data']
     wn = snap_epoch_n['W_EE_coo']['data']
@@ -60,10 +67,10 @@ def check_weight_movement(snap_epoch0, snap_epoch_n, epoch_n, atol=1e-12):
 def check_pool_rescaling(snap_seeded_epoch0, snap_control_epoch0, p_cross, P_size, X_size,
                           atol=1e-6):
     """
-    At epoch 0, seeded and control W_EE should have identical connectivity
-    (row, col) -- both come from load_baseline(seed=7) -- and differ
-    only on P<->X cross-pool synapses, by exactly a factor of p_cross
-    (spec 2.2).
+    At epoch 0, the seeded and control runs should have identical W_EE
+    connectivity (same row, col), since both come from load_baseline(seed=7).
+    They should differ only on synapses that cross between the P and X pools,
+    and there only by a factor of exactly p_cross (spec 2.2).
     """
     row_s, col_s, w_s = (snap_seeded_epoch0['W_EE_coo'][k] for k in ('row', 'col', 'data'))
     row_c, col_c, w_c = (snap_control_epoch0['W_EE_coo'][k] for k in ('row', 'col', 'data'))
@@ -72,7 +79,8 @@ def check_pool_rescaling(snap_seeded_epoch0, snap_control_epoch0, p_cross, P_siz
         "seeded and control W_EE have different connectivity at epoch 0 -- " \
         "did both conditions use the same seed?"
 
-    # row = postsynaptic, col = presynaptic (circuit/run_baseline.py's save_baseline convention)
+    # row = postsynaptic neuron, col = presynaptic neuron (this is the
+    # convention used by circuit/run_baseline.py's save_baseline)
     pre, post = col_s, row_s
     in_P_pre = pre < P_size
     in_X_pre = (pre >= P_size) & (pre < P_size + X_size)

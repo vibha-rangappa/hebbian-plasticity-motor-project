@@ -1,4 +1,10 @@
-"""30-second run to check if w_scale_II=0.5 gives a stable AI fixed point."""
+"""
+This script runs 30-second simulations to check whether w_scale_II=0.5
+(inhibitory-to-inhibitory connection strength) gives a stable AI "fixed
+point", meaning the firing rate and CV-ISI settle into the AI band and stay
+there rather than drifting. It also tries a few nearby values of w_scale_II,
+g_EI, and nu_ext for comparison.
+"""
 import numpy as np, sys
 from brian2 import *
 prefs.codegen.target = 'numpy'

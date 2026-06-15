@@ -1,8 +1,11 @@
 # plasticity/train.py
 
 """
-Trial runner, burn-in/training loop, and CLI entry point for STDP +
-center-out task training (spec sections 2.3-6).
+This is the main training script. It runs the center-out task on the
+STDP network: it runs single trials, handles the burn-in period and the
+training loop, takes periodic "snapshots" of the network, and provides the
+command-line interface used to launch a training run (e.g. with a chosen
+condition, execution mode, and plasticity settings).
 """
 
 import argparse
@@ -30,11 +33,13 @@ from plasticity.snapshot import save_snapshot, copy_baseline_provenance, save_tr
 
 def run_one_trial(net_objs, params, theta_i, theta_cue):
     """
-    Run one trial: prep (t_prep) -> exec (t_exec) -> ITI (t_iti) (spec 2.3).
+    Run one trial, which is three phases back to back: prep (lasting
+    t_prep), then exec (t_exec), then the inter-trial interval, ITI (t_iti).
 
-    Sets net_objs['input_group'].rates from rates_for_phase() for each phase
-    and advances net_objs['net'] by that phase's duration. After this
-    function returns, the input group is left at the ITI (background) rate.
+    For each phase, this sets net_objs['input_group'].rates using
+    rates_for_phase(), then runs net_objs['net'] forward by that phase's
+    duration. By the time this function returns, the input group has been
+    left at the ITI (background) rate.
     """
     for phase in ('prep', 'exec', 'iti'):
         rates = rates_for_phase(
@@ -50,16 +55,18 @@ def run_one_trial(net_objs, params, theta_i, theta_cue):
 
 def extract_snapshot_spikes(net_objs, t_snapshot_start, params, n_test_trials):
     """
-    Extract spikes recorded during [t_snapshot_start, t_snapshot_start +
-    n_test_trials * trial_dur) from spike_E and spike_input, and convert
-    absolute simulation time to (trial_idx, time_in_trial_ms).
+    Pull out all the spikes that happened during the snapshot window, which
+    runs from t_snapshot_start to t_snapshot_start + n_test_trials * trial_dur,
+    from both spike_E (excitatory neurons) and spike_input (input neurons).
+    Converts each spike's absolute simulation time into a (trial number,
+    time within that trial in ms) pair.
 
-    Input neurons are offset by N_exc, so spike_neuron_idx in the returned
-    dict spans 0..N_exc-1 (E) and N_exc..N_exc+n_input-1 (input), per spec
-    section 6.
+    Input neuron indices are shifted up by N_exc, so in the returned
+    spike_neuron_idx array, values 0..N_exc-1 mean an excitatory neuron and
+    values N_exc..N_exc+n_input-1 mean an input neuron.
 
-    Returns dict with 'spike_times_ms' (float32, ms within trial),
-    'spike_neuron_idx' (int32), 'spike_trial_idx' (int32).
+    Returns a dict with 'spike_times_ms' (float32, time in ms within the
+    trial), 'spike_neuron_idx' (int32), and 'spike_trial_idx' (int32).
     """
     trial_dur = params['t_prep'] + params['t_exec'] + params['t_iti']
     t_end = t_snapshot_start + n_test_trials * trial_dur
@@ -77,8 +84,9 @@ def extract_snapshot_spikes(net_objs, t_snapshot_start, params, n_test_trials):
 
     rel_t = times - t_snapshot_start
     trial_idx = np.floor(rel_t / trial_dur).astype(np.int32)
-    # A spike at the exact end of the window would land in trial n_test_trials;
-    # clip it back into the last trial.
+    # A spike that lands exactly at the end of the window would otherwise be
+    # counted as belonging to trial n_test_trials (one past the last trial),
+    # so clip it back into the last trial.
     trial_idx = np.clip(trial_idx, 0, n_test_trials - 1)
     time_in_trial_ms = ((rel_t - trial_idx * trial_dur) * 1000.0).astype(np.float32)
 
@@ -91,8 +99,11 @@ def extract_snapshot_spikes(net_objs, t_snapshot_start, params, n_test_trials):
 
 def compute_monitoring_metrics(net_objs, t_snapshot_start, params, n_test_trials):
     """
-    Monitoring metrics over the just-completed test-trial window (spec 2.5):
-    mean_rate_E, mean_w_EE, frac_w_max, mean_cv_isi.
+    Compute the four summary metrics over the test-trial window that was
+    just run: mean_rate_E (average firing rate of E neurons), mean_w_EE
+    (average E->E weight), frac_w_max (fraction of E->E weights at their
+    cap), and mean_cv_isi (average coefficient of variation of inter-spike
+    intervals, a measure of spike-timing irregularity).
     """
     trial_dur = params['t_prep'] + params['t_exec'] + params['t_iti']
     t_end = t_snapshot_start + n_test_trials * trial_dur
@@ -123,9 +134,10 @@ def compute_monitoring_metrics(net_objs, t_snapshot_start, params, n_test_trials
 
 def check_abort_criteria(metrics, epoch):
     """
-    Raise RuntimeError if monitoring metrics indicate the run should stop
-    (spec 2.5): mean_rate_E > 30 Hz (runaway potentiation) or frac_w_max > 0.5
-    (depression insufficient).
+    Stop the run (by raising RuntimeError) if the monitoring metrics show
+    something has gone wrong: mean_rate_E above 30 Hz means potentiation is
+    running away unchecked, and frac_w_max above 0.5 means depression isn't
+    keeping up (too many weights are stuck at their cap).
     """
     if metrics['mean_rate_E'] > 30.0:
         raise RuntimeError(
@@ -140,21 +152,26 @@ def check_abort_criteria(metrics, epoch):
 def run_snapshot(net_objs, h5_path, epoch, test_trial_sequence, theta_i, params,
                   check_abort=True):
     """
-    Snapshot protocol (spec 2.4):
-    1. Freeze STDP (plastic=0).
-    2. Run the fixed test_trial_sequence (40 trials: 5/direction).
-    3. Record W_EE (COO) and spike data, save to h5_path.
-    4. Restore the prior plastic state (1 for a normal run, 0 for a frozen
-       control — so a frozen run stays frozen throughout).
-    5. Print a one-line summary and, if check_abort, check abort criteria.
+    Take one snapshot of the network's current state. Steps:
+    1. Turn STDP off for the duration of the snapshot (plastic = 0), so
+       taking the snapshot doesn't itself change the weights.
+    2. Run the fixed test_trial_sequence (40 trials: 5 per direction).
+    3. Record the E->E weight matrix (in sparse COO form) and the spike data,
+       and save both to h5_path.
+    4. Put plasticity back to whatever it was before (1 for a normal run, or
+       0 for a frozen control, so a frozen run stays frozen the whole time).
+    5. Print a one-line summary, and if check_abort is True, check whether
+       the run should be aborted.
 
-    check_abort=False is for tests that use an unrealistic nu_ext to
-    guarantee spiking activity in a tiny network — such networks can
-    legitimately exceed the 30 Hz / frac_w_max abort thresholds without that
-    meaning anything for the real (validated) network run by run_condition().
+    check_abort=False is meant for tests. Tests sometimes use an unrealistic
+    nu_ext (external input rate) to force spiking activity in a tiny test
+    network, and such a network can legitimately go over the 30 Hz / frac_w_max
+    abort thresholds without that meaning anything is actually wrong, unlike
+    in the real, validated network used by run_condition().
     """
     syn = net_objs['syn_EE']
-    # `plastic` is a shared (scalar) synaptic variable, so plastic[:] is 0-dimensional.
+    # `plastic` is a single shared value for the whole synapse group (not one
+    # per synapse), so plastic[:] comes back as a 0-dimensional array.
     prev_plastic = int(np.asarray(syn.plastic[:]))
     syn.plastic = 0
 
@@ -173,8 +190,8 @@ def run_snapshot(net_objs, h5_path, epoch, test_trial_sequence, theta_i, params,
     w_arr = np.array(syn.w[:] / amp, dtype=np.float32)
     W_EE_coo = {
         'data': w_arr,
-        'row': j_arr,   # postsynaptic — matches circuit/run_baseline.py's save_baseline convention
-        'col': i_arr,   # presynaptic
+        'row': j_arr,   # postsynaptic neuron index, matches circuit/run_baseline.py's save_baseline convention
+        'col': i_arr,   # presynaptic neuron index
         'shape': np.array([params['N_exc'], params['N_exc']], dtype=np.int32),
     }
 
@@ -193,20 +210,27 @@ def run_snapshot(net_objs, h5_path, epoch, test_trial_sequence, theta_i, params,
 
 def _select_codegen_backend():
     """
-    Switch Brian2 to the cython backend for the full validation run (Task 7
-    is ~30x slower on numpy). Must be called AFTER importing from
-    circuit.network, which sets prefs.codegen.target = 'numpy' at import time
-    (see circuit/network.py module-level prefs assignment).
+    Switch Brian2 over to the cython code-generation backend for the full
+    run, because the numpy backend is roughly 30x slower for this size of
+    simulation.
 
-    Must ALSO be called AFTER load_baseline()/build_network(): their
-    `.connect(p=...)` calls and `rand()`-based v init execute immediately
-    under whatever codegen target is active, and Brian2's RNG-consumption
-    pattern for those calls differs between 'numpy' and 'cython' even with
-    the same seed. baseline_network.h5 was generated under 'numpy', so
-    reproducing its connectivity only works if build_network() also runs
-    under 'numpy'.
+    This must be called AFTER we import from circuit.network, since that
+    module sets prefs.codegen.target = 'numpy' as soon as it's imported (see
+    the module-level prefs line in circuit/network.py).
 
-    Falls back to numpy if no working C++ compiler is found.
+    It must ALSO be called AFTER load_baseline()/build_network() have already
+    run. Those functions call `.connect(p=...)` and use `rand()` to set up
+    initial membrane potentials, and these run immediately, using whatever
+    codegen backend is active at that moment. Brian2's random number
+    generator produces a different sequence of draws for 'numpy' vs 'cython'
+    even with the same seed, so if we switched backends too early, the
+    network's connectivity would come out different from what's stored in
+    baseline_network.h5 (which was generated under 'numpy'). So build_network()
+    has to run under 'numpy', and only afterward do we switch to 'cython' for
+    speed.
+
+    If no working C++ compiler is found, this falls back to the numpy
+    backend.
     """
     prefs.codegen.target = 'cython'
     try:
@@ -222,15 +246,17 @@ def run_condition(net_objs, params, h5_path, theta_i, n_per_direction, snapshot_
                    seed=42, condition_name='', check_abort=True, test_trial_sequence=None,
                    plasticity_on=True, weight_norm=True):
     """
-    Burn-in, epoch-0 snapshot, then the training loop with periodic snapshots
-    (spec sections 3-4).
+    Run the full training condition: burn-in period, an epoch-0 snapshot,
+    then the training loop, taking a snapshot whenever the trial count hits
+    one of the requested snapshot epochs.
 
-    snapshot_epochs : set of int — cumulative trial counts at which to run a
-        snapshot, e.g. {0, 50, 100}. Epoch 0 is handled before the training
-        loop (the loop's `completed = trial_idx + 1` never equals 0).
-    test_trial_sequence : the fixed sequence used at every snapshot. Defaults
-        to generate_test_trial_sequence() (40 trials, 5/direction). Tests can
-        pass a shorter sequence to keep runtime down.
+    snapshot_epochs : a set of ints, the cumulative trial counts at which to
+        take a snapshot, e.g. {0, 50, 100}. Epoch 0 is handled separately
+        before the training loop starts, since inside the loop
+        `completed = trial_idx + 1` can never be 0.
+    test_trial_sequence : the fixed sequence of test trials used for every
+        snapshot. Defaults to generate_test_trial_sequence() (40 trials, 5
+        per direction). Tests can pass in a shorter sequence to run faster.
     """
     if test_trial_sequence is None:
         test_trial_sequence = generate_test_trial_sequence()
@@ -238,18 +264,20 @@ def run_condition(net_objs, params, h5_path, theta_i, n_per_direction, snapshot_
     trial_sequence = generate_trial_sequence(n_per_direction, params['n_directions'], seed=seed)
     n_trials = len(trial_sequence)
 
-    # --- Burn-in (spec section 3): STDP frozen, input at background rate,
-    # settles the V-initialization transient before any snapshot is taken.
+    # --- Burn-in: STDP is turned off and the input sits at its background
+    # rate. This lets the initial membrane-potential transient die down
+    # before we take any snapshot.
     print(f"[{condition_name}] burn-in: {params['t_burn_in']:.1f} s (plastic=0)")
     syn = net_objs['syn_EE']
     syn.plastic = 0
     net_objs['input_group'].rates = np.full(params['n_input'], params['r_background']) * Hz
     net_objs['net'].run(params['t_burn_in'] * second)
-    # Frozen control (plasticity_on=False, spec Control A): leave STDP off for the
-    # whole run, isolating geometry from network structure alone.
+    # For the frozen control (plasticity_on=False, "Control A"), STDP stays off
+    # for the entire run. This isolates what the network's geometry looks like
+    # from structure alone, without any learning.
     syn.plastic = 1 if plasticity_on else 0
 
-    # --- Epoch-0 snapshot (before any training trial)
+    # --- Epoch-0 snapshot (taken before any training trial has run)
     if 0 in snapshot_epochs:
         run_snapshot(net_objs, h5_path, epoch=0,
                       test_trial_sequence=test_trial_sequence,
@@ -262,10 +290,13 @@ def run_condition(net_objs, params, h5_path, theta_i, n_per_direction, snapshot_
         theta_cue = 2 * np.pi * direction_idx / params['n_directions']
         run_one_trial(net_objs, params, theta_i, theta_cue)
 
-        # Multiplicative synaptic scaling after each trial (the mandatory homeostatic
-        # companion to additive STDP): holds each neuron's total incoming E->E weight at
-        # its baseline, so STDP redistributes rather than inflates -- keeping the network
-        # in the AI regime instead of running away (rate climbed 1.86->9.6 Hz without it).
+        # After each trial, rescale each neuron's incoming E->E weights so
+        # their total stays equal to its baseline value. This is the
+        # homeostatic step that has to go along with plain additive STDP: it
+        # makes STDP redistribute weight among synapses rather than just
+        # adding weight overall, which keeps the network in the
+        # asynchronous-irregular (AI) regime instead of runaway excitation.
+        # Without this step, the mean firing rate climbed from 1.86 to 9.6 Hz.
         if apply_norm:
             normalize_incoming_weights(net_objs['syn_EE'], net_objs['W_target_EE'],
                                        params['w_max'])
@@ -282,57 +313,94 @@ def run_condition(net_objs, params, h5_path, theta_i, n_per_direction, snapshot_
 def main():
     parser = argparse.ArgumentParser(
         description="STDP + 8-direction center-out task: training run")
+    # --condition picks the overall experimental condition: how the network is
+    # wired up at the start (p_cross, the cross-assembly connection
+    # probability) and whether E->E STDP is on.
     parser.add_argument('--condition', choices=['seeded', 'control', 'frozen'],
                          required=True,
                          help="seeded: p_cross=0.2, STDP on; "
                               "control: p_cross=1.0, STDP on; "
                               "frozen: p_cross=0.2, STDP off (Control A, the matched "
                               "structural control for seeded)")
+    # --exec_mode controls what happens during the "exec" (movement) phase of
+    # each trial: whether the task input keeps driving the network, or is
+    # withdrawn so the network evolves on its own.
     parser.add_argument('--exec_mode', choices=['sustained', 'autonomous'],
                          default='sustained',
                          help="sustained: exec input clamps the state (default); "
                               "autonomous: exec input withdrawn, network evolves freely "
                               "from the prep-set initial condition")
+    # --weight_norm turns the per-trial synaptic rescaling (the homeostatic
+    # step described above) on or off.
     parser.add_argument('--weight_norm', choices=['on', 'off'], default='on',
                          help="on (default): multiplicative synaptic scaling after each "
                               "trial holds total incoming E->E weight constant, keeping "
                               "the network in the AI regime; off: raw additive STDP")
+    # --inhibitory_plasticity turns on iSTDP (inhibitory STDP, Vogels et al.
+    # 2011) on the I->E synapses, which adjusts inhibition to push each E
+    # neuron's firing rate toward a target (rho0).
     parser.add_argument('--inhibitory_plasticity', choices=['on', 'off'], default='off',
                          help="on: Vogels (2011) inhibitory STDP on I->E synapses drives "
                               "each E neuron toward rho0, stabilizing the network gain; "
                               "off (default): static inhibition")
+    # --n_per_direction sets how many training trials to run for each of the 8
+    # directions (so total training trials = 8 * n_per_direction).
     parser.add_argument('--n_per_direction', type=int, default=13,
                          help="Training trials per direction (default 13 -> "
                               "104 total)")
+    # --snapshot_epochs lists the trial counts at which to pause training and
+    # save a snapshot of the network's weights and activity.
     parser.add_argument('--snapshot_epochs', type=int, nargs='+', default=[0, 50, 100],
                          help="Cumulative trial counts at which to snapshot")
-    # Must match the seed baseline_network.h5 was generated with (seed=7,
-    # see circuit/results/baseline_network.h5:/validation/seed) so
-    # load_baseline()'s connectivity check passes.
+    # --seed must match the seed that baseline_network.h5 was generated with
+    # (seed=7, see circuit/results/baseline_network.h5:/validation/seed),
+    # otherwise load_baseline()'s connectivity check will fail.
     parser.add_argument('--seed', type=int, default=7)
+    # --baseline_h5, --results_dir: where to read the baseline network from,
+    # and where to write this run's output file.
     parser.add_argument('--baseline_h5', type=str,
                          default='circuit/results/baseline_network.h5')
     parser.add_argument('--results_dir', type=str, default='plasticity/results')
+    # --label sets the output filename suffix. Use it to give runs that share
+    # the same --condition different names, e.g. for an iSTDP-only
+    # decomposition control or for individual sweep points.
     parser.add_argument('--label', type=str, default=None,
                          help="output filename suffix (default: condition); use to "
                               "distinguish runs that share a --condition, e.g. an "
                               "iSTDP-only decomposition control or sweep points")
-    # Inhibitory-plasticity parameter overrides (for the sweep). None = use default.
+    # The next three arguments override individual iSTDP parameters, used
+    # when running a parameter sweep. Leaving them as None means "use the
+    # default value".
     parser.add_argument('--rho0', type=float, default=None,
                          help="iSTDP target E rate (Hz)")
     parser.add_argument('--eta_istdp', type=float, default=None,
                          help="iSTDP learning rate (A)")
     parser.add_argument('--tau_istdp', type=float, default=None,
                          help="iSTDP trace time constant (s)")
+    # --ee_plasticity lets you turn E->E STDP on or off independently of
+    # --condition. This is the sweep's "E->E null axis" (a way to test what
+    # happens with E->E plasticity off regardless of which condition you're
+    # in). If not given, it just follows --condition as usual.
     parser.add_argument('--ee_plasticity', choices=['on', 'off'], default=None,
                          help="override E->E STDP independent of --condition (the sweep's "
                               "E->E null axis); default follows --condition")
+    # --A_plus / --A_minus override the E->E STDP potentiation/depression
+    # amplitudes, used by the probe that tests how the LTP/LTD balance
+    # affects the network.
+    parser.add_argument('--A_plus', type=float, default=None,
+                         help="E->E STDP potentiation amplitude (A); overrides default "
+                              "(used by the E->E LTP/LTD-asymmetry probe)")
+    parser.add_argument('--A_minus', type=float, default=None,
+                         help="E->E STDP depression amplitude (A); overrides default "
+                              "(used by the E->E LTP/LTD-asymmetry probe)")
     args = parser.parse_args()
 
     params = {**DEFAULT_PARAMS, **DEFAULT_PARAMS_PLASTICITY}
     params['exec_mode'] = args.exec_mode
-    # control uses uniform init (p_cross=1.0); seeded and the frozen structural
-    # control share the seeded init (p_cross=0.2) so frozen controls for seeded.
+    # The 'control' condition starts from uniform connectivity (p_cross=1.0).
+    # Both 'seeded' and 'frozen' start from the same seeded connectivity
+    # (p_cross=0.2), since 'frozen' is meant as the matched structural control
+    # for 'seeded'.
     p_cross = (params['p_cross_control'] if args.condition == 'control'
                else params['p_cross_seeded'])
     plasticity_on = (args.condition != 'frozen')
@@ -341,8 +409,8 @@ def main():
     inhibitory_plasticity = (args.inhibitory_plasticity == 'on')
     params['inhibitory_plasticity'] = inhibitory_plasticity
 
-    # Sweep overrides.
-    for key in ('rho0', 'eta_istdp', 'tau_istdp'):
+    # Apply any sweep overrides given on the command line.
+    for key in ('rho0', 'eta_istdp', 'tau_istdp', 'A_plus', 'A_minus'):
         if getattr(args, key) is not None:
             params[key] = getattr(args, key)
     if args.ee_plasticity is not None:
@@ -354,8 +422,8 @@ def main():
     if os.path.exists(h5_path):
         os.remove(h5_path)
 
-    # Self-contained output file (spec section 6): provenance from the
-    # circuit baseline, plus this run's STDP/task parameters.
+    # Make the output file self-contained: copy over provenance info from the
+    # circuit baseline, then write this run's STDP and task parameters.
     copy_baseline_provenance(h5_path, args.baseline_h5)
     save_training_params(h5_path, params, p_cross=p_cross, seed=args.seed,
                          plasticity_on=plasticity_on)
@@ -365,8 +433,8 @@ def main():
                                   inhibitory_plasticity=inhibitory_plasticity)
     theta_i = assign_preferred_directions(params['n_input'], params['n_directions'])
 
-    # Codegen target is selected only after the network is fully built (see
-    # _select_codegen_backend's docstring) so that load_baseline()'s
+    # Only switch the codegen backend after the network is fully built (see
+    # _select_codegen_backend's docstring for why), so that load_baseline()'s
     # connectivity reproduction matches baseline_network.h5 exactly.
     _select_codegen_backend()
 

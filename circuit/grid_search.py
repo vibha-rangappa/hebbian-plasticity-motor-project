@@ -1,18 +1,24 @@
 # circuit/grid_search.py
 
 """
-2D parameter grid search to find the AI-regime operating point for the
-balanced E/I circuit.
+This script sweeps two parameters of the balanced excitatory/inhibitory (E/I)
+network to find a good "asynchronous irregular" (AI) operating point, the
+firing regime real cortical networks are thought to sit in (not synchronized,
+not silent, somewhat irregular spike timing).
 
-Scans (nu_ext, g_EI) over a 5×6 grid (30 points), running a 1 s simulation
-per point. Saves results to CSV and a two-panel heatmap.
+It scans every combination of nu_ext (external input rate) and g_EI
+(inhibitory weight) over a 5x6 grid (30 combinations total), running a 1
+second simulation for each one. Results are saved as a CSV table and as a
+two-panel heatmap image so you can see at a glance which combinations land in
+the AI regime.
 
-Usage:
+How to use it:
     python circuit/grid_search.py
-    # → inspect circuit/results/tuning_heatmap.png
-    # → pick (nu_ext, g_EI) from the overlap region where:
-    #       mean_rate_E in [2, 10] Hz  AND  mean_CV_ISI in [0.8, 1.2]
-    # → run: python circuit/run_baseline.py --nu_ext <value> --g_EI <value>
+    # then look at circuit/results/tuning_heatmap.png
+    # pick (nu_ext, g_EI) from the region where both of these are true:
+    #       mean_rate_E is between 2 and 10 Hz
+    #       mean_CV_ISI is between 0.8 and 1.2
+    # then run: python circuit/run_baseline.py --nu_ext <value> --g_EI <value>
 """
 
 import os
@@ -36,29 +42,32 @@ RESULTS_DIR = os.path.join(os.path.dirname(__file__), 'results')
 # g_EI_scale:  6 scale factors applied to w_mean_EE
 # Total: 30 grid points
 # ------------------------------------------------------------------
-NU_EXT_VALS = np.linspace(10, 60, 5)          # Hz per synapse; effective rate = N_ext × nu_ext = 800–4800 Hz
-G_EI_SCALES = np.linspace(2.0, 8.0, 6)        # × w_mean_EE; Brunel AI regime ≈ 2–8×
-W_MEAN_EE   = DEFAULT_PARAMS['w_mean_EE']      # A
-G_EI_VALS   = G_EI_SCALES * W_MEAN_EE         # A
+NU_EXT_VALS = np.linspace(10, 60, 5)          # input rate per synapse, in Hz; the effective total rate is N_ext x nu_ext, about 800-4800 Hz
+G_EI_SCALES = np.linspace(2.0, 8.0, 6)        # how many times w_mean_EE to use for the inhibitory weight; the classic Brunel AI regime is roughly 2-8x
+W_MEAN_EE   = DEFAULT_PARAMS['w_mean_EE']      # amps
+G_EI_VALS   = G_EI_SCALES * W_MEAN_EE         # amps
 
-# AI-regime boundaries (for contour overlays on heatmap)
+# AI-regime boundaries (used to draw contour lines on the heatmap)
 RATE_MIN, RATE_MAX = 2.0, 10.0   # Hz
 CV_MIN,   CV_MAX   = 0.8,  1.2
 
 
 def run_grid_point(nu_ext: float, g_EI: float) -> tuple:
     """
-    Build network, run 1 s, return (mean_rate_E_hz, mean_CV_ISI).
+    Build the network with these two parameter values, run it for 1 second,
+    and return (mean_rate_E_hz, mean_CV_ISI).
 
-    Uses min_spikes=5 for CV-ISI because we only run 1 s — neurons at
-    ~5 Hz fire just enough spikes for a rough CV estimate.
+    We use min_spikes=5 for the CV-ISI calculation because the run is only
+    1 second long. Neurons firing around 5 Hz will only manage a handful of
+    spikes in that time, so 5 is the lowest threshold that still gives a
+    rough estimate of how irregular the spiking is.
     """
     params = {**DEFAULT_PARAMS, 'nu_ext': nu_ext, 'g_EI': g_EI}
     objs = build_network(params, seed=42)
     objs['net'].run(1.0 * second)
 
     Ne = params['N_exc']
-    T_sim = 1.0  # seconds — matches net.run duration above
+    T_sim = 1.0  # seconds, matches the net.run duration above
     mean_rate_E = objs['spike_E'].num_spikes / (Ne * T_sim)
 
     trains_E = _extract_spike_trains(objs['spike_E'], Ne, 1.0)
@@ -68,7 +77,7 @@ def run_grid_point(nu_ext: float, g_EI: float) -> tuple:
 
 
 def save_csv(results: list, path: str) -> None:
-    """Write grid results to CSV."""
+    """Write the grid results to a CSV file."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w', newline='') as f:
         writer = csv.DictWriter(
@@ -79,8 +88,8 @@ def save_csv(results: list, path: str) -> None:
 
 def save_heatmap(results: list, path: str) -> None:
     """
-    Two-panel heatmap: mean E firing rate (left) and mean CV-ISI (right).
-    White contours mark the AI-regime boundaries.
+    Make a two-panel heatmap: mean E firing rate on the left, mean CV-ISI on
+    the right. White contour lines mark the boundaries of the AI regime.
     """
     n_nu  = len(NU_EXT_VALS)
     n_gei = len(G_EI_VALS)
@@ -94,10 +103,11 @@ def save_heatmap(results: list, path: str) -> None:
         rate_grid[i, j] = row['mean_rate_E_hz']
         cv_grid[i, j]   = row['mean_CV_ISI']
 
-    # -1 encodes NaN CV (no qualifying spikes) — convert back before plotting
+    # A value of -1 means "no CV could be computed" (not enough spikes).
+    # Convert those back to NaN so they don't get plotted as real numbers.
     cv_grid[cv_grid == -1] = np.nan
 
-    g_ei_nA = G_EI_VALS / 1e-9  # A → nA for axis labels
+    g_ei_nA = G_EI_VALS / 1e-9  # convert amps to nanoamps for the axis labels
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 

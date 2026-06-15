@@ -1,11 +1,20 @@
 # circuit/network.py
 
 """
-Shared network factory for the Hebbian Plasticity / Manifold Sculptor project.
+This file builds the spiking network model used everywhere else in the project.
 
-All parameter values in DEFAULT_PARAMS are in SI units:
-seconds, volts, amps, ohms. Do not pass Brian2 Quantities in params — the
-factory function converts them internally so params remain JSON-serialisable.
+It defines build_network(), which sets up a balanced network of excitatory
+(E) and inhibitory (I) leaky integrate-and-fire neurons connected with
+current-based exponential synapses, plus a default set of parameters
+(DEFAULT_PARAMS) that puts the network in a stable, biologically realistic
+firing regime. Other scripts (calibration scans, the baseline runner, the
+plasticity training code) all call build_network() with these parameters
+(sometimes with a few values changed) to get a fresh copy of the network.
+
+All parameter values in DEFAULT_PARAMS are plain numbers in SI units:
+seconds, volts, amps, ohms. Don't pass Brian2 Quantities (numbers with units
+attached) into params. build_network() attaches the units internally, which
+keeps params as plain numbers that can be saved to JSON.
 """
 
 import numpy as np
@@ -17,58 +26,74 @@ from brian2 import (
     prefs,
 )
 
-# Use the numpy backend to avoid C compilation overhead across repeated calls
-# (e.g., during the grid search in grid_search.py).
+# Use the numpy backend instead of compiling C code each time. This is slower
+# per run but avoids the compile step, which adds up when we call build_network()
+# many times in a row (e.g., during the grid search in grid_search.py).
 prefs.codegen.target = 'numpy'
 
 DEFAULT_PARAMS = {
-    # Neuron — SI units throughout
-    'tau_m':    20e-3,    # s    membrane time constant
-    'V_rest':  -70e-3,    # V    resting potential
-    'V_th':    -55e-3,    # V    spike threshold
-    'V_reset': -75e-3,    # V    post-spike reset (mild hyperpolarisation)
-    'tau_ref':   2e-3,    # s    absolute refractory period
-    'R':        100e6,    # Ω    membrane resistance
+    # Neuron settings, all in SI units
+    'tau_m':    20e-3,    # s    how fast the membrane voltage decays back to rest
+    'V_rest':  -70e-3,    # V    resting voltage (no input)
+    'V_th':    -55e-3,    # V    voltage at which the neuron fires a spike
+    'V_reset': -75e-3,    # V    voltage right after a spike (slightly below rest)
+    'tau_ref':   2e-3,    # s    refractory period (can't fire again right after a spike)
+    'R':        100e6,    # ohm  membrane resistance (how much voltage a given current produces)
 
-    # Synapse
-    'tau_syn_E':  5e-3,   # s    AMPA-like decay
-    'tau_syn_I': 10e-3,   # s    GABA-A-like decay
-    'w_mean_EE': 0.06e-9, # A    mean E→E and E→I weight (0.06 nA)
-    'sigma_w':   0.5,     #      log-space std for all weight distributions
+    # Synapse settings
+    'tau_syn_E':  5e-3,   # s    how fast excitatory input current decays (AMPA-like)
+    'tau_syn_I': 10e-3,   # s    how fast inhibitory input current decays (GABA-A-like)
+    'w_mean_EE': 0.06e-9, # A    average weight for E-to-E and E-to-I connections (0.06 nA)
+    'sigma_w':   0.5,     #      spread (std dev in log space) of all weight distributions
 
-    # Network topology
+    # Network size and connectivity
     'N_exc':     800,
     'N_inh':     200,
     'p_connect': 0.1,
 
-    # Operating point — tuned empirically to produce stable AI regime.
-    # Tuning procedure: 30-s multi-seed scan over (nu_ext, g_EI, w_scale_II).
-    # Target: rate 2–10 Hz, CV-ISI 0.8–1.2, pairwise corr <0.05 in [20–30 s] window.
-    # nu_ext = 7.0 Hz (above the 6.25 Hz threshold rate): gives a slightly wider
-    #   AI corridor (lower boundary drops to g_EI≈0.070 vs ≈0.075 at nu=6.25).
-    # g_EI = 0.090 nA (1.5× w_mean_EE): chosen for STDP headroom — see note below.
-    # w_scale_II = 0.50: I→I half of I→E; empirically needed for stable fixed point
-    #   (0.2 → E rate decays to <1 Hz; 1.0 → E runaway because I self-cancels).
-    # STDP headroom: with g_EI=0.090, w_EE can grow ~29% before CV drops below 0.8
-    #   (soft boundary at g_eff=0.070 nA). Hard oscillatory boundary is ~55% away.
-    #   2× headroom is architecturally impossible in this network (80 inputs/neuron
-    #   + diffusion regime); weight normalization during STDP training is the
-    #   primary protection.
-    'g_EI':     0.090e-9,   # A    mean I→E inhibitory weight (1.5× w_mean_EE)
-    'nu_ext':   7.0,        # Hz   background Poisson rate per neuron (> threshold)
-    'w_scale_II': 0.50,     #      I→I mean = 0.50× g_EI
+    # Operating point: these three values were tuned by hand so the network
+    # sits in a stable "asynchronous irregular" (AI) regime, which is the
+    # realistic firing pattern we want (similar to real cortex).
+    # How we tuned it: ran 30-second simulations with several random seeds,
+    # scanning over (nu_ext, g_EI, w_scale_II), and looked for:
+    #   firing rate 2-10 Hz, CV-ISI (irregularity measure) 0.8-1.2,
+    #   and pairwise correlation < 0.05, all measured in the 20-30 s window.
+    # nu_ext = 7.0 Hz: this is above the 6.25 Hz threshold rate, and it gives
+    #   a slightly bigger range of g_EI values that still work
+    #   (down to g_EI of about 0.070, versus about 0.075 at nu_ext = 6.25).
+    # g_EI = 0.090 nA (1.5x w_mean_EE): chosen to leave room for the E-to-E
+    #   weights to grow during STDP learning without breaking the AI regime
+    #   (see the note below).
+    # w_scale_II = 0.50: the I-to-I weight is set to half of I-to-E. This was
+    #   needed for the network to settle into a stable firing rate.
+    #   At 0.2, the E firing rate decays away to under 1 Hz. At 1.0, the E
+    #   rate runs away because the inhibitory neurons end up cancelling
+    #   each other out instead of inhibiting the E population.
+    # STDP headroom: with g_EI = 0.090, the E-to-E weight (w_EE) can grow
+    #   about 29% before the irregularity measure (CV) drops below 0.8
+    #   (that's the "soft" boundary, at an effective g of 0.070 nA). The
+    #   network only becomes oscillatory (a much worse "hard" boundary)
+    #   after about 55% growth. We can't realistically get 2x headroom in
+    #   this network just from picking g_EI (because of how it's wired,
+    #   with 80 inputs per neuron and the way input currents add up).
+    #   So the main thing protecting the network from instability during
+    #   STDP training is the weight normalization applied while training.
+    'g_EI':     0.090e-9,   # A    average I-to-E inhibitory weight (1.5x w_mean_EE)
+    'nu_ext':   7.0,        # Hz   background input rate per neuron (above threshold)
+    'w_scale_II': 0.50,     #      I-to-I average weight = 0.50x g_EI
 }
 
 
 def _lognormal_weights(w_mean: float, sigma: float, size: int, rng) -> np.ndarray:
     """
-    Draw log-normal weights with E[W] = w_mean and log-space std = sigma.
+    Draw synaptic weights from a log-normal distribution whose average value
+    is exactly w_mean, with sigma controlling the spread (in log space).
 
-    mu_log = log(w_mean) - sigma^2/2  →  E[W] = exp(mu_log + sigma^2/2) = w_mean.
-
-    numpy's lognormal(mean, sigma) takes `mean` as the mean of the *underlying*
-    normal distribution (mu_log), not the mean of the resulting log-normal.
-    The -sigma^2/2 correction makes the log-normal mean equal w_mean.
+    The formula mu_log = log(w_mean) - sigma^2/2 is a correction factor we
+    need because numpy's lognormal(mean, sigma) treats "mean" as the mean of
+    the underlying normal distribution, not the mean of the resulting
+    log-normal values. Without the -sigma^2/2 correction, the average of the
+    drawn weights would come out higher than w_mean.
     """
     mu_log = np.log(w_mean) - 0.5 * sigma ** 2
     return rng.lognormal(mu_log, sigma, size)
@@ -76,20 +101,24 @@ def _lognormal_weights(w_mean: float, sigma: float, size: int, rng) -> np.ndarra
 
 def build_network(params: dict, seed: int = 42) -> dict:
     """
-    Build a balanced LIF recurrent network with current-based exponential synapses.
+    Build a balanced recurrent network of leaky integrate-and-fire (LIF)
+    neurons, connected with current-based exponential synapses.
 
-    Calls start_scope() to clear all previous Brian2 objects — safe to call
-    repeatedly (e.g., in a parameter sweep). All previously returned objects
-    become invalid on the next call.
+    This calls start_scope() first, which wipes out any Brian2 objects from
+    a previous call. That makes it safe to call build_network() over and
+    over (e.g., once per point in a parameter sweep), but it also means any
+    network objects returned from an earlier call stop working once you
+    call this again.
 
     Parameters
     ----------
     params : dict
-        Network parameters in SI units. Build from DEFAULT_PARAMS:
+        Network parameters in SI units. Build from DEFAULT_PARAMS, e.g.:
             build_network({**DEFAULT_PARAMS, 'g_EI': 0.30e-9})
     seed : int
-        Seeds both Brian2's internal RNG and numpy's weight-init RNG.
-        Use the same seed across all runs for reproducibility.
+        Seeds both Brian2's internal random number generator and the numpy
+        generator used for the initial weights. Use the same seed across
+        runs if you want reproducible results.
 
     Returns
     -------
@@ -104,10 +133,13 @@ def build_network(params: dict, seed: int = 42) -> dict:
 
     # ------------------------------------------------------------------
     # Neuron equations
-    # I_exc and I_inh are always >= 0; inhibition enters with a minus sign
-    # in the membrane equation. This keeps weight signs positive and visible.
-    # (unless refractory) means dv/dt is frozen during the refractory period;
-    # I_exc and I_inh still decay normally — synaptic inputs are not blocked.
+    # I_exc and I_inh are both always >= 0. The minus sign in front of I_inh
+    # in the voltage equation is what makes it inhibitory. Keeping all
+    # weights positive like this makes it easy to see at a glance whether a
+    # weight is excitatory or inhibitory.
+    # "(unless refractory)" means the voltage (v) stops updating during the
+    # refractory period right after a spike. I_exc and I_inh keep decaying
+    # normally during that time, incoming synaptic input is not blocked.
     # ------------------------------------------------------------------
     eqs = '''
     dv/dt     = (-(v - V_rest) + R * (I_exc - I_inh)) / tau_m : volt (unless refractory)
@@ -145,8 +177,10 @@ def build_network(params: dict, seed: int = 42) -> dict:
         name='inh',
     )
 
-    # Initialise voltages uniformly in [V_reset, V_th] to avoid a long
-    # transient where all neurons start at the same potential and fire synchronously.
+    # Start each neuron's voltage at a random value between V_reset and V_th.
+    # If every neuron started at the same voltage, they'd all fire their
+    # first spike at the same time, creating a long synchronized transient
+    # at the start of the simulation. Randomizing the start avoids that.
     exc.v = 'V_reset + rand() * (V_th - V_reset)'
     inh.v = 'V_reset + rand() * (V_th - V_reset)'
     exc.I_exc = 0 * amp
@@ -156,8 +190,12 @@ def build_network(params: dict, seed: int = 42) -> dict:
 
     # ------------------------------------------------------------------
     # Synapses
-    # E→target: increments I_exc. I→target: increments I_inh.
-    # All weights positive; sign of inhibition is in the membrane equation.
+    # Every synapse from an E neuron adds to the target's I_exc.
+    # Every synapse from an I neuron adds to the target's I_inh.
+    # All synaptic weights are stored as positive numbers; whether a
+    # synapse is excitatory or inhibitory is determined by which current
+    # (I_exc or I_inh) it adds to, and I_inh has the minus sign in the
+    # voltage equation above.
     # ------------------------------------------------------------------
     syn_EE = Synapses(exc, exc, 'w : amp', on_pre='I_exc_post += w', name='syn_EE')
     syn_EI = Synapses(exc, inh, 'w : amp', on_pre='I_exc_post += w', name='syn_EI')
@@ -170,8 +208,10 @@ def build_network(params: dict, seed: int = 42) -> dict:
     syn_IE.connect(p=p_c)
     syn_II.connect(condition='i != j', p=p_c)
 
-    # Log-normal weight init: E[w] = w_mean for each connection type.
-    # Store raw float arrays; multiply by `amp` to attach Brian2 units.
+    # Set the initial weights for each connection type by drawing from a
+    # log-normal distribution whose average is w_mean for that type.
+    # _lognormal_weights() returns plain numbers (floats); multiplying by
+    # `amp` attaches Brian2's "amps" unit to them.
     w_ee  = p['w_mean_EE']
     g_ei  = p['g_EI']
     sigma = p['sigma_w']
@@ -182,16 +222,22 @@ def build_network(params: dict, seed: int = 42) -> dict:
     syn_II.w = _lognormal_weights(p['w_scale_II'] * g_ei, sigma, len(syn_II), rng) * amp
 
     # ------------------------------------------------------------------
-    # External Poisson drive
-    # N=1 gives each target neuron one INDEPENDENT Poisson process.
-    # Brian2's N>1 shares spike trains across all target neurons, introducing
-    # correlated background that triggers synchronised inhibition and kills AI.
-    # We instead scale the rate by N_ext (≈ recurrent E fan-in) so the mean
-    # background current matches C_ext×ν_ext in Brunel's parameterisation:
-    #   E[I_bg] = N_ext × nu_ext × w_mean_EE × tau_syn_E
-    # Drive goes to I_exc so it decays with tau_syn_E.
+    # External background input (Poisson drive)
+    # Using N=1 gives each neuron its own independent random spike train.
+    # If we used N>1, Brian2 would share the same spike train across all
+    # target neurons, which would make their background input correlated.
+    # That correlated input then drives correlated (synchronized)
+    # inhibition, which breaks the asynchronous irregular (AI) firing
+    # pattern we want.
+    # Instead, we keep N=1 but scale up the rate by N_ext (roughly the
+    # number of recurrent E inputs each neuron gets) so the average
+    # background current still matches what you'd get with N_ext separate
+    # inputs at rate nu_ext each, following Brunel's (2000) notation:
+    #   average background current = N_ext * nu_ext * w_mean_EE * tau_syn_E
+    # This input current is added to I_exc, so it decays with the
+    # excitatory time constant tau_syn_E.
     # ------------------------------------------------------------------
-    N_ext = int(p['N_exc'] * p['p_connect'])   # = 80 for full network
+    N_ext = int(p['N_exc'] * p['p_connect'])   # = 80 for the full-size network
     drive_E = PoissonInput(exc, 'I_exc', N=1,
                            rate=N_ext * p['nu_ext'] * Hz,
                            weight=p['w_mean_EE'] * amp)
@@ -200,7 +246,8 @@ def build_network(params: dict, seed: int = 42) -> dict:
                            weight=p['w_mean_EE'] * amp)
 
     # ------------------------------------------------------------------
-    # Spike monitors and Network
+    # Record spikes from both populations, and bundle everything together
+    # into a Brian2 Network object so it can be run as one unit.
     # ------------------------------------------------------------------
     spike_E = SpikeMonitor(exc)
     spike_I = SpikeMonitor(inh)

@@ -1,19 +1,27 @@
-"""Test sustained firing at nu_ext=6.25 Hz (threshold rate) with g_EI=0.060 nA."""
+"""
+This script checks whether the network keeps firing for the full 20 seconds
+(rather than dying out) at nu_ext=6.25 Hz, which is the input rate that just
+barely brings neurons to spike threshold, paired with g_EI=0.060 nA. It also
+tries a few nearby combinations to see how robust the sustained firing is.
+"""
 import numpy as np, sys
 from brian2 import *
 prefs.codegen.target = 'numpy'
 from circuit.network import build_network, DEFAULT_PARAMS
 from circuit.run_baseline import compute_cv_isi, _extract_spike_trains
 
-# The threshold condition: I_ext = I_threshold exactly
-# Background alone brings neurons to threshold -> fluctuations drive firing
-# With g_EI = w_EE = 0.060 nA, balanced recurrent input should sustain activity
+# The threshold condition is when the external input current exactly equals
+# the threshold current. At that point, the background input alone brings
+# neurons right up to threshold, so random fluctuations are what actually
+# trigger spikes. With g_EI = w_EE = 0.060 nA, the balanced recurrent input
+# (excitation and inhibition cancel out on average) should be able to keep
+# this firing going.
 
 combos = [
     (6.25, 0.060, 42),
-    (6.25, 0.060, 0),   # different seed to check robustness
-    (7.0,  0.060, 42),  # slightly above threshold
-    (7.0,  0.065, 42),  # more inhibition to balance higher drive
+    (6.25, 0.060, 0),   # different random seed, to check this isn't a fluke
+    (7.0,  0.060, 42),  # input rate slightly above threshold
+    (7.0,  0.065, 42),  # more inhibition to balance the higher input
     (8.0,  0.065, 42),
     (8.0,  0.070, 42),
 ]

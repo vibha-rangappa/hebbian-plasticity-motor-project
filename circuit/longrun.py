@@ -1,11 +1,17 @@
-"""30-second run at the best known operating point to get converged CV statistics."""
+"""
+This script runs the network for 30 seconds at the best operating point found
+so far (nu_ext=4.4 Hz, g_EI=0.055 nA). The point of the long run is to let the
+CV-ISI (a measure of how irregular the spike timing is) settle down to a
+stable value, by checking it over several time windows as the simulation goes
+on.
+"""
 import numpy as np, sys
 from brian2 import *
 prefs.codegen.target = 'numpy'
 from circuit.network import build_network, DEFAULT_PARAMS
 from circuit.run_baseline import compute_cv_isi, _extract_spike_trains
 
-# Best candidate: nu_ext=4.4, g_EI=0.055 nA
+# Best candidate so far: nu_ext=4.4, g_EI=0.055 nA
 params = {**DEFAULT_PARAMS, 'nu_ext': 4.4, 'g_EI': 0.055e-9}
 objs = build_network(params, seed=42)
 objs['net'].run(30.0 * second)

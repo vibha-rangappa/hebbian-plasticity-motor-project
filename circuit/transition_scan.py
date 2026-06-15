@@ -1,3 +1,10 @@
+"""
+This script does a fine scan of (nu_ext, g_EI) combinations near the boundary
+between the synchronous irregular (SI) and asynchronous irregular (AI)
+regimes, using a longer 10-second run for each point. The goal is to find a
+combination that gives a firing rate between 2 and 10 Hz AND a CV-ISI greater
+than 0.8, both signs of the AI regime.
+"""
 import numpy as np
 import sys
 from brian2 import *
@@ -5,8 +12,8 @@ prefs.codegen.target = 'numpy'
 from circuit.network import build_network, DEFAULT_PARAMS
 from circuit.run_baseline import compute_cv_isi, _extract_spike_trains
 
-# Very fine scan around the SI->AI transition with long run
-# Goal: find rate 2-10 Hz AND CV > 0.8
+# Fine scan around the SI -> AI transition, with a longer run.
+# Goal: find a combination with rate between 2-10 Hz AND CV-ISI above 0.8.
 print('nu_ext   g_EI(nA)   nu_E   nu_I    I/E     CV     [1-5s]  [5-10s]')
 print('-'*70)
 sys.stdout.flush()

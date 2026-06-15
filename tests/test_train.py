@@ -1,4 +1,13 @@
 # tests/test_train.py
+#
+# Tests for plasticity/train.py: the code that runs the center-out reaching
+# task trial by trial, takes "snapshots" of the network's spikes/weights at
+# given epochs, checks for runaway activity (abort criteria), and saves
+# everything to an HDF5 file. The checks here cover timing (does a trial take
+# the right amount of simulated time), what gets recorded in a snapshot,
+# whether plasticity is correctly frozen during test trials but active during
+# training, and whether the synaptic-scaling (weight normalization) keeps
+# each neuron's total incoming E->E weight from growing past its target.
 
 import numpy as np
 import pytest
@@ -36,6 +45,10 @@ def _small_setup(nu_ext=1000.0, seed=1):
 
 
 def test_run_one_trial_advances_time_by_trial_duration():
+    # One trial has three phases: preparation (t_prep), movement execution
+    # (t_exec), and an inter-trial interval (t_iti). After running one
+    # trial, the simulation clock should have moved forward by exactly the
+    # sum of those three durations.
     start_scope()
     net_objs, small, theta_i = _small_setup()
     t_before = net_objs['net'].t / second
@@ -46,6 +59,9 @@ def test_run_one_trial_advances_time_by_trial_duration():
 
 
 def test_run_one_trial_leaves_input_at_background_rate():
+    # After a trial finishes, the input neurons' firing rates should be back
+    # at the background rate, not stuck at whatever rate was used during the
+    # task cue.
     start_scope()
     net_objs, small, theta_i = _small_setup()
     run_one_trial(net_objs, small, theta_i, theta_cue=0.0)
@@ -54,6 +70,17 @@ def test_run_one_trial_leaves_input_at_background_rate():
 
 
 def test_extract_snapshot_spikes_keys_and_ranges():
+    # Run two trials (for reaching directions 0 and 1), then ask
+    # extract_snapshot_spikes() to pull out the spikes recorded during that
+    # window. Check that:
+    #  - the returned dictionary has exactly the three expected arrays,
+    #  - those arrays all have the same length (one entry per spike),
+    #  - at least one spike was recorded (nu_ext=1000 is high enough to
+    #    guarantee spiking),
+    #  - spike times fall within a single trial's duration (0 to trial_dur),
+    #  - the trial index for each spike is a valid trial number (0 or 1),
+    #  - the neuron index for each spike is a valid neuron, including both
+    #    the excitatory population (N_exc) and the input population (n_input).
     start_scope()
     net_objs, small, theta_i = _small_setup()
     t_snapshot_start = net_objs['net'].t / second
@@ -80,6 +107,12 @@ def test_extract_snapshot_spikes_keys_and_ranges():
 
 
 def test_compute_monitoring_metrics_keys_and_ranges():
+    # After running two trials, compute_monitoring_metrics() should return a
+    # dictionary with exactly these four summary numbers: average E firing
+    # rate, average E->E weight, fraction of weights near w_max, and average
+    # spike-timing irregularity (CV of inter-spike intervals). Check that
+    # each value is in a sensible range, and that the reported mean E->E
+    # weight actually matches the mean of the current weights.
     start_scope()
     net_objs, small, theta_i = _small_setup()
     t_snapshot_start = net_objs['net'].t / second
@@ -97,23 +130,41 @@ def test_compute_monitoring_metrics_keys_and_ranges():
 
 
 def test_check_abort_criteria_raises_on_high_rate():
+    # If the mean E firing rate is way too high (35 Hz here), this is a sign
+    # the network is in a runaway/unstable state, so check_abort_criteria()
+    # should raise an error mentioning "mean_rate_E" to flag what went wrong.
     metrics = {'mean_rate_E': 35.0, 'mean_w_EE': 0.0, 'frac_w_max': 0.0, 'mean_cv_isi': 1.0}
     with pytest.raises(RuntimeError, match="mean_rate_E"):
         check_abort_criteria(metrics, epoch=100)
 
 
 def test_check_abort_criteria_raises_on_high_frac_w_max():
+    # If too large a fraction of E->E weights are sitting at w_max (60% here),
+    # that's a sign of runaway potentiation, so check_abort_criteria() should
+    # raise an error mentioning "frac_w_max".
     metrics = {'mean_rate_E': 5.0, 'mean_w_EE': 0.0, 'frac_w_max': 0.6, 'mean_cv_isi': 1.0}
     with pytest.raises(RuntimeError, match="frac_w_max"):
         check_abort_criteria(metrics, epoch=100)
 
 
 def test_check_abort_criteria_passes_normal_metrics():
+    # With all metrics in a normal, healthy range, check_abort_criteria()
+    # should do nothing and not raise any error.
     metrics = {'mean_rate_E': 5.0, 'mean_w_EE': 0.06e-9, 'frac_w_max': 0.05, 'mean_cv_isi': 0.9}
     check_abort_criteria(metrics, epoch=100)  # should not raise
 
 
 def test_run_snapshot_writes_hdf5_and_restores_plastic(tmp_path):
+    # run_snapshot() runs a set of "test" trials (no learning should happen
+    # during these) and saves the network state to an HDF5 file. After it's
+    # done, check that:
+    #  - the E->E synapses are still marked as plastic (plastic == 1), i.e.
+    #    run_snapshot() turns plasticity back on afterwards if it turned it
+    #    off during the snapshot,
+    #  - the saved weight matrix (W_EE_coo, a sparse "coordinate format"
+    #    matrix) has one entry per E->E synapse,
+    #  - the saved trial labels match the test trial sequence we asked for,
+    #  - the monitoring log records that epoch 0 was run.
     start_scope()
     net_objs, small, theta_i = _small_setup()
     h5_path = str(tmp_path / "test.h5")
@@ -136,6 +187,10 @@ def test_run_snapshot_writes_hdf5_and_restores_plastic(tmp_path):
 
 
 def test_run_snapshot_freezes_weights_during_test_trials(tmp_path):
+    # Test trials are meant to probe the network's current behavior, not to
+    # train it further. So while run_snapshot() is running its test trials,
+    # the E->E weights should not change at all: they should come out
+    # identical to how they started.
     start_scope()
     net_objs, small, theta_i = _small_setup()
     h5_path = str(tmp_path / "test.h5")
@@ -153,6 +208,12 @@ def test_run_snapshot_freezes_weights_during_test_trials(tmp_path):
 
 
 def test_run_condition_small_network_writes_snapshots(tmp_path):
+    # run_condition() runs a full training condition (burn-in plus training
+    # trials) and takes snapshots at the requested epochs (here epochs 0 and
+    # 8). Check that the monitoring log records both epochs, that both
+    # snapshots have a weight matrix of the same shape (same number of E->E
+    # synapses, since connectivity doesn't change), and that the trial
+    # labels in the first snapshot match what we asked for.
     start_scope()
     net_objs, small, theta_i = _small_setup()
     small = {**small, 't_burn_in': 0.1}  # keep the test fast
@@ -176,8 +237,11 @@ def test_run_condition_small_network_writes_snapshots(tmp_path):
 
 
 def test_run_condition_frozen_leaves_weights_unchanged(tmp_path):
-    """Frozen control (plasticity_on=False): E->E weights identical across the run,
-    despite heavy spiking (nu_ext=1000) that would change them if STDP were on."""
+    """This is the "frozen" control condition (plasticity_on=False): even
+    though we drive the network hard (nu_ext=1000, lots of spiking, which
+    would normally change weights via STDP), the E->E weights should be
+    exactly identical between epoch 0 and epoch 8, because plasticity is
+    turned off for this run."""
     start_scope()
     net_objs, small, theta_i = _small_setup()
     small = {**small, 't_burn_in': 0.1}
@@ -194,7 +258,9 @@ def test_run_condition_frozen_leaves_weights_unchanged(tmp_path):
 
 
 def test_run_condition_plastic_changes_weights(tmp_path):
-    """Contrast to the frozen control: with plasticity on, weights move over training."""
+    """This is the opposite of the frozen control above: with plasticity_on=True,
+    STDP is active during training, so the E->E weights at epoch 8 should be
+    different from epoch 0, i.e. the weights actually moved during training."""
     start_scope()
     net_objs, small, theta_i = _small_setup()
     small = {**small, 't_burn_in': 0.1}
@@ -211,8 +277,12 @@ def test_run_condition_plastic_changes_weights(tmp_path):
 
 
 def test_weight_norm_prevents_insum_inflation(tmp_path):
-    """With synaptic scaling on, no neuron's incoming E->E sum exceeds its baseline
-    target after training -- the homeostatic guarantee that stops runaway potentiation."""
+    """This checks the homeostatic synaptic scaling (weight_norm=True), which
+    is meant to stop runaway potentiation. After training, for every
+    excitatory neuron, the total of its incoming E->E weights ("insum")
+    should not exceed the target value it started with (its baseline insum).
+    In other words, synaptic scaling can hold a neuron's total input steady
+    or bring it down, but it should never let it grow past the target."""
     start_scope()
     net_objs, small, theta_i = _small_setup()
     small = {**small, 't_burn_in': 0.1}
@@ -230,17 +300,22 @@ def test_weight_norm_prevents_insum_inflation(tmp_path):
     insum = np.bincount(post, weights=w, minlength=small['N_exc'])
     target = net_objs['W_target_EE']
     has = target > 0
-    # Scale-then-clip can only hold-or-lower the sum, never inflate it.
+    # The "scale then clip" approach can only keep the sum the same or lower
+    # it, never push it above the target.
     assert np.all(insum[has] <= target[has] * (1.0 + 1e-6))
-    # And it should be close to target (not collapsed to ~0).
+    # And the sum should stay reasonably close to the target, not collapse
+    # down toward zero.
     assert np.median(insum[has] / target[has]) > 0.8
 
 
 def test_build_stdp_network_exposes_weight_target():
+    # build_stdp_network() should record, for each excitatory neuron, the
+    # starting total of its incoming E->E weights, as 'W_target_EE'. This is
+    # the target that synaptic scaling tries to maintain later on. Check that
+    # this target really does equal the initial per-neuron weight sum.
     start_scope()
     net_objs, small, theta_i = _small_setup()
     assert 'W_target_EE' in net_objs
-    # Target equals the initial per-post incoming-weight sum.
     syn = net_objs['syn_EE']
     post = np.asarray(syn.j[:])
     w0 = np.asarray(syn.w[:] / amp)
@@ -249,6 +324,10 @@ def test_build_stdp_network_exposes_weight_target():
 
 
 def test_run_condition_runs_correct_number_of_training_trials():
+    # run_condition() should advance the simulation clock by exactly
+    # t_burn_in plus (number of trials) x (trial duration). With
+    # n_per_direction=1, the number of trials equals n_directions (one trial
+    # per reaching direction).
     start_scope()
     net_objs, small, theta_i = _small_setup()
     small = {**small, 't_burn_in': 0.1}

@@ -1,4 +1,10 @@
-"""Multi-seed scan to find a parameter point that passes core AI checks on all 4 seeds."""
+"""
+This script scans several parameter combinations, each tested with 4
+different random seeds, to find one that passes the core "asynchronous
+irregular" (AI) checks (firing rate, CV-ISI, and pairwise correlation) every
+single time, not just by luck with one seed. A combination that works across
+all 4 seeds is more likely to be a robust operating point.
+"""
 import numpy as np, sys
 from brian2 import *
 prefs.codegen.target = 'numpy'
@@ -26,7 +32,7 @@ def pairwise_corr(spike_mon, N, t_start, t_end, n_pairs=200, dt=0.002):
 
 SEEDS = [42, 0, 1, 7]
 T_SIM = 25.0
-T_START = 15.0  # check [15-25s]
+T_START = 15.0  # only look at the 15-25 s window
 
 combos = [
     # (nu_ext, g_EI_nA, w_scale_II)

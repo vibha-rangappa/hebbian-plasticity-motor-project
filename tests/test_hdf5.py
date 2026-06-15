@@ -1,4 +1,10 @@
 # tests/test_hdf5.py
+#
+# Tests for circuit/run_baseline.py's save_baseline function, which writes a built
+# network (its parameters, weight matrices, and some validation metrics) out to an
+# HDF5 file. These tests build a small network, save it, and then re-open the HDF5
+# file to check that the expected groups and fields exist, the saved numbers match
+# what was put in, and the sparse weight matrix can be reconstructed correctly.
 
 import os
 import numpy as np
@@ -13,7 +19,9 @@ from circuit.run_baseline import save_baseline
 
 @pytest.fixture
 def small_network(tmp_path):
-    """Build a small network, run 0.5 s, and return everything needed for save_baseline."""
+    """Build a small network, run it for 0.5 seconds, and package up everything
+    save_baseline needs (the params, the built network objects, a validation dict,
+    and a temporary output path)."""
     start_scope()
     small = {**DEFAULT_PARAMS, 'N_exc': 80, 'N_inh': 20, 'nu_ext': 15.0}
     objs = build_network(small, seed=7)
@@ -22,7 +30,7 @@ def small_network(tmp_path):
     validation = {
         'mean_rate_E':        objs['spike_E'].num_spikes / (small['N_exc'] * 0.5),
         'mean_rate_I':        objs['spike_I'].num_spikes / (small['N_inh'] * 0.5),
-        'mean_CV_ISI':        0.95,   # placeholder value
+        'mean_CV_ISI':        0.95,   # placeholder value, not computed from this run
         'mean_pairwise_corr': 0.02,
         'raster_times':       np.array([0.1, 0.2, 0.3], dtype=np.float32),
         'raster_indices':     np.array([0, 1, 2],        dtype=np.int32),
@@ -31,6 +39,9 @@ def small_network(tmp_path):
 
 
 def test_hdf5_required_groups_exist(small_network):
+    """After saving, the HDF5 file should have three top-level groups: 'network'
+    (the network setup), 'weights' (the connection weight matrices), and 'validation'
+    (the sanity-check metrics). This just checks all three are present."""
     params, objs, validation, path = small_network
     save_baseline(str(path), params, objs, validation, seed=7)
     with h5py.File(path, 'r') as f:
@@ -39,6 +50,9 @@ def test_hdf5_required_groups_exist(small_network):
 
 
 def test_hdf5_network_scalars(small_network):
+    """The saved network group should record the right neuron counts (80 excitatory,
+    20 inhibitory, matching what we built) and the right neuron time constant
+    (tau_m = 20 ms = 20e-3 seconds)."""
     params, objs, validation, path = small_network
     save_baseline(str(path), params, objs, validation, seed=7)
     with h5py.File(path, 'r') as f:
@@ -48,6 +62,13 @@ def test_hdf5_network_scalars(small_network):
 
 
 def test_hdf5_weight_coo_reconstruction(small_network):
+    """The excitatory-to-excitatory weight matrix (W_EE) is stored in sparse "COO"
+    format (separate data/row/col/shape arrays, listing only the nonzero entries).
+    This test rebuilds the actual sparse matrix from those pieces and checks it has
+    the right shape (80x80, matching the 80 excitatory neurons), has at least some
+    nonzero connections, and that all the weights are positive (since these are
+    excitatory connections, which should only ever push other neurons toward firing,
+    never away from it)."""
     params, objs, validation, path = small_network
     save_baseline(str(path), params, objs, validation, seed=7)
     with h5py.File(path, 'r') as f:
@@ -62,6 +83,10 @@ def test_hdf5_weight_coo_reconstruction(small_network):
 
 
 def test_hdf5_validation_fields(small_network):
+    """The 'validation' group should contain all the sanity-check fields we expect:
+    firing rates, spike regularity (CV-ISI), pairwise correlation, raster data, the
+    random seed used, and the external drive and inhibitory weight settings
+    (nu_ext_hz and g_EI_nA). This just checks each expected field name is present."""
     params, objs, validation, path = small_network
     save_baseline(str(path), params, objs, validation, seed=7)
     with h5py.File(path, 'r') as f:

@@ -1,18 +1,23 @@
 # geometry/visualize.py
 
 """
-Figures for Part 3 geometry analysis. Reads the tidy metrics CSV (and, for the jPC plane,
-re-runs preprocessing on one snapshot) and writes PNGs to geometry/results/figures/.
+This script makes the main figures for the Part 3 geometry analysis. It reads the tidy
+metrics CSV produced by the geometry pipeline, and for the jPC plane figure it also
+re-runs the preprocessing step on one training snapshot. All figures are saved as PNGs to
+geometry/results/figures/.
 
     PYTHONPATH=. python geometry/visualize.py
 
-Produces:
-    pr_vs_epoch.png            participation ratio (prep & exec) vs training epoch
-    orthogonality_vs_epoch.png prep/exec mean principal angle vs epoch, with the
-                               random-subspace null band and the 90-degree (orthogonal)
-                               reference -- the figure that shows the network is aligned,
-                               not orthogonal
-    jpc_plane_<cond>_ep<N>.png exec-epoch trajectories projected on the dominant jPC plane
+It produces:
+    pr_vs_epoch.png            participation ratio (prep and exec) plotted against
+                               training epoch
+    orthogonality_vs_epoch.png prep/exec mean principal angle plotted against epoch,
+                               along with the random-subspace null band and a 90-degree
+                               (orthogonal) reference line. This is the figure that shows
+                               whether the network's prep and exec activity stay aligned
+                               or become orthogonal over training.
+    jpc_plane_<cond>_ep<N>.png exec-epoch trajectories for each reach direction,
+                               projected onto the dominant jPC plane
 """
 
 import argparse
@@ -22,7 +27,7 @@ from collections import defaultdict
 
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')   # headless: write files, no display
+matplotlib.use('Agg')   # no display available, just write figure files to disk
 import matplotlib.pyplot as plt
 
 from plasticity.snapshot import load_snapshot
@@ -37,7 +42,7 @@ def _load_rows(csv_path):
 
 
 def _series(rows, condition, observable, metric, window=None, k=''):
-    """(epochs, values) sorted by epoch for one metric."""
+    """Pull out one metric's values across epochs and return (epochs, values), sorted by epoch."""
     pts = []
     for r in rows:
         if (r['condition'] == condition and r['observable'] == observable and
@@ -98,7 +103,7 @@ def plot_orthogonality_vs_epoch(rows, conditions):
 
 
 def plot_jpc_plane(h5_path, condition, epoch, n_exc=800):
-    """Project exec-epoch condition trajectories onto the dominant jPC plane."""
+    """Project the exec-epoch trajectories for each condition onto the dominant jPC plane and plot them."""
     snap = load_snapshot(h5_path, epoch)
     pre = preprocess_snapshot(snap, n_exc=n_exc)
     Z, _ = project_pcs(pre['X_exec'], k=6)
@@ -112,7 +117,7 @@ def plot_jpc_plane(h5_path, condition, epoch, n_exc=800):
     for c in range(C):
         p = Z[:, c, :] @ plane
         ax.plot(p[:, 0], p[:, 1], '-', color=cmap[c], lw=1.4)
-        ax.plot(p[0, 0], p[0, 1], 'o', color=cmap[c], ms=5)   # start
+        ax.plot(p[0, 0], p[0, 1], 'o', color=cmap[c], ms=5)   # mark the starting point of the trajectory
     ax.set_aspect('equal')
     ax.set_xlabel('jPC 1'); ax.set_ylabel('jPC 2')
     ax.set_title(f'Dominant jPC plane: {condition} epoch {epoch}\n'
@@ -138,7 +143,7 @@ def main():
     written = [plot_pr_vs_epoch(rows, conditions),
                plot_orthogonality_vs_epoch(rows, conditions)]
 
-    # jPC plane at the last epoch for each condition.
+    # Make the jPC plane figure at the last epoch for each condition.
     epochs = sorted({int(r['epoch']) for r in rows})
     last = epochs[-1]
     for cond in conditions:

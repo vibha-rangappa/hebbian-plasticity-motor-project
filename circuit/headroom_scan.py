@@ -1,10 +1,16 @@
 """
-Two outputs:
-  1. Corrected (nu_ext, g_EI) heatmap with the correct parameter range and the
-     operating point marked. Shows where the AI corridor actually lives and how
-     narrow it is.
-  2. 1D g_EI sweep at nu_ext=6.25, ws=0.50 to map the AI corridor boundary and
-     quantify how much w_EE growth STDP can produce before exit.
+This script checks how much "headroom" we have around the chosen AI operating
+point before plasticity (STDP) could push the network out of the AI regime.
+
+It scans (nu_ext, g_EI) over a grid and produces two things:
+  1. A corrected heatmap over the right parameter range, with the chosen
+     operating point marked. This shows where the AI "corridor" (the band of
+     parameters that gives AI-like activity) actually sits, and how narrow it
+     is.
+  2. A 1D sweep over g_EI at nu_ext=6.25 Hz, w_scale_II=0.50, to map where the
+     edges of that AI corridor are. This tells us how much w_EE (the
+     excitatory-to-excitatory weight) could grow under STDP before the network
+     leaves the AI regime.
 """
 import os
 import numpy as np
@@ -17,7 +23,7 @@ from circuit.network import build_network, DEFAULT_PARAMS
 from circuit.run_baseline import compute_cv_isi, _extract_spike_trains, compute_pairwise_corr
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), 'results')
-T_SIM, T_START = 20.0, 10.0  # check [10-20 s] for speed but past transient
+T_SIM, T_START = 20.0, 10.0  # only look at 10-20 s: long enough to be past the startup transient, short enough to run fast
 
 NU_EXT_VALS = [5.0, 5.5, 6.0, 6.25, 6.5, 7.0, 7.5, 8.0]
 G_EI_VALS   = [0.050, 0.055, 0.060, 0.065, 0.070, 0.075, 0.080, 0.090, 0.100, 0.120]
@@ -47,7 +53,7 @@ def run_point(nu_ext, g_ei):
     return r_E, cv, pc, ratio
 
 
-# ---- 2D grid ----
+# ---- Run the 2D grid of (nu_ext, g_EI) combinations ----
 print(f"Running {len(NU_EXT_VALS) * len(G_EI_VALS)} grid points...")
 print(f"{'nu_ext':>7}  {'g_EI(nA)':>9}  {'rate_E':>7}  {'CV':>6}  {'pairr':>7}  {'I/E':>5}")
 import sys
@@ -63,7 +69,7 @@ for nu in NU_EXT_VALS:
         print(f"{nu:>7.2f}  {gei:>9.3f}  {r_E:>7.2f}  {cv:>6.3f}  {pc:>7.4f}  {ie:>5.1f}{mark}")
         sys.stdout.flush()
 
-# ---- Build grid arrays ----
+# ---- Pack the results into 2D arrays for plotting ----
 nu_arr  = np.array(NU_EXT_VALS)
 gei_arr = np.array(G_EI_VALS)
 rate_grid = np.full((len(nu_arr), len(gei_arr)), np.nan)
@@ -79,7 +85,7 @@ for row in results:
     pc_grid[i, j]   = row['pc'] if not np.isnan(row['pc']) else 1.0
     ai_grid[i, j]   = row['ai']
 
-# ---- Plot ----
+# ---- Make the figure ----
 fig, axes = plt.subplots(1, 3, figsize=(16, 5))
 fig.suptitle('AI regime map  (w_scale_II = 0.50, checked in [10–20 s] window, seed=42)', fontsize=11)
 
@@ -125,9 +131,11 @@ except Exception:
     pass
 ax.plot(OP_GEI, OP_NU, 'b*', ms=14, label='Operating point')
 
-# STDP trajectory: w_EE grows → effective g_EI_eff = g_EI_op / f decreases.
-# At fixed nu_ext = OP_NU, trace the horizontal line showing where the
-# operating point moves as w_EE grows by factors 1.25, 1.50, 2.0.
+# What happens under STDP: as w_EE grows by some factor f, the effective
+# inhibition g_EI_eff = g_EI_op / f gets smaller (inhibition is relatively
+# weaker compared to the now-bigger excitatory weight). At the fixed
+# nu_ext = OP_NU, draw vertical lines showing where the operating point would
+# move if w_EE grows by factors of 1.25, 1.50, or 2.0.
 for f, label in [(1.25, '×1.25 w_EE'), (1.50, '×1.50'), (2.00, '×2.0')]:
     g_eff = OP_GEI / f
     ax.axvline(g_eff, color='blue', lw=1.2, linestyle=':', alpha=0.8)
@@ -146,16 +154,17 @@ fig.savefig(out, dpi=150, bbox_inches='tight')
 plt.close(fig)
 print(f"\nHeatmap saved to {out}")
 
-# ---- Headroom summary ----
+# ---- Print a summary table of the headroom ----
 print("\n--- STDP headroom at operating point (nu_ext=6.25, g_EI=0.075, w_EE=0.06) ---")
 print("w_EE growth (f)  |  effective g_EI/w_EE  |  g_EI_eff (nA)  |  in AI corridor?")
 print("-"*75)
 
-# For each f, what does the g_EI_eff = 0.075/f correspond to in our scan?
+# For each growth factor f, work out what g_EI_eff = 0.075 / f corresponds to
+# in our scan, and look up the closest scanned point.
 for f in [1.0, 1.1, 1.25, 1.5, 2.0, 3.0]:
     g_eff = OP_GEI / f
-    ratio = g_eff / 0.06  # g_EI_eff / w_EE
-    # Find closest scan point at nu=6.25
+    ratio = g_eff / 0.06  # g_EI_eff divided by w_EE
+    # Find the closest scan point at nu_ext = 6.25
     i_nu = np.argmin(np.abs(nu_arr - 6.25))
     j_g  = np.argmin(np.abs(gei_arr - g_eff))
     scanned_g = gei_arr[j_g]

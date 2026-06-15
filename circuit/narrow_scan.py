@@ -1,14 +1,20 @@
-"""Narrow scan to find the SI->AI transition in detail."""
+"""
+This script zooms in on the boundary between the "synchronous irregular" (SI)
+regime and the "asynchronous irregular" (AI) regime, by trying a fine grid of
+parameter combinations close to that boundary and printing the resulting
+firing rates and CV-ISI values for each one.
+"""
 import numpy as np, sys
 from brian2 import *
 prefs.codegen.target = 'numpy'
 from circuit.network import build_network, DEFAULT_PARAMS
 from circuit.run_baseline import compute_cv_isi, _extract_spike_trains
 
-# Very fine scan in the transition zone
-# Two parallel strategies:
-# A) Scan nu_ext finely at g_EI=0.055 nA 
-# B) Try sigma_w=1.0 (more weight variability -> higher CV)
+# Very fine scan right in the transition zone.
+# Two strategies are tried side by side:
+# A) Scan nu_ext finely while holding g_EI fixed at 0.055 nA
+# B) Try sigma_w=1.0 (more variability in the weights, which might give a
+#    higher CV-ISI since neurons would be less in sync)
 
 combos = [
     # (nu_ext, g_EI, sigma_w)
@@ -16,13 +22,13 @@ combos = [
     (4.30, 0.055, 0.5),
     (4.35, 0.055, 0.5),
     (4.40, 0.055, 0.5),
-    # Higher weight variability -> more heterogeneity -> potentially higher CV
+    # More weight variability could mean more heterogeneity, which could mean a higher CV
     (4.30, 0.055, 0.8),
     (4.40, 0.055, 0.8),
     (4.30, 0.055, 1.0),
     (4.40, 0.055, 1.0),
     (4.50, 0.055, 1.0),
-    # Slightly weaker g_EI to push rate up
+    # Slightly weaker g_EI to try to push the firing rate up
     (4.00, 0.053, 0.5),
     (4.00, 0.054, 0.5),
 ]
