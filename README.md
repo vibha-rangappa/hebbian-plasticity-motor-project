@@ -1,4 +1,8 @@
-# Hebbian Plasticity as a Manifold Sculptor
+# From Local Plasticity to Global Geometry
+
+*Can spike-timing-dependent plasticity, with no access to a global error
+signal, sculpt the low-dimensional, rotational, output-null population
+geometry seen in primate motor cortex?*
 
 ## Overview
 
