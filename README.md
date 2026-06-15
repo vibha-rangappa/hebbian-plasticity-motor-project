@@ -545,10 +545,10 @@ write-up.
 - Kaufman, M. T., Churchland, M. M., Ryu, S. I., & Shenoy, K. V. (2014).
   Cortical activity in the null space: permitting preparation without
   movement. *Nature Neuroscience*.
-- Lebedev, M. A., Ossadtchi, A., Mill, N. A., Urpi, N. A., Rebesco, J. M.,
-  Cervera, M. R., & Nicolelis, M. A. L. (2019). Analysis of neuronal ensemble
-  activity reveals the pitfalls and shortcomings of rotation dynamics.
-  *Scientific Reports*.
+- Lebedev, M. A., Ossadtchi, A., Mill, N. A., Urpi, N. A., Cervera, M. R., &
+  Nicolelis, M. A. L. (2019). Analysis of neuronal ensemble activity reveals
+  the pitfalls and shortcomings of rotation dynamics. *Scientific Reports*,
+  *9*(1), 18978. https://doi.org/10.1038/s41598-019-54760-4
 - Russo, A. A., Bittner, S. R., Perkins, S. M., Seely, J. S., London, B. M.,
   Lara, A. H., Miri, A., Marshall, N. J., Kohn, A., Jessell, T. M., Abbott, L.
   F., Cunningham, J. P., & Churchland, M. M. (2018). Motor cortex embeds
