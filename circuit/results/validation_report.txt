@@ -1,0 +1,2 @@
+nu_ext=7.0 Hz  g_EI=0.09 nA  w_scale_II=0.5  seed=7
+CV_ISI=0.8355  pairwise_r=0.0130  rate_ratio=5.17  rate_E=2.12 Hz
