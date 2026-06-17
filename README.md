@@ -1,4 +1,4 @@
-# From Local Plasticity to Global Geometry
+# Hebbian Plasiticy
 
 *Can spike-timing-dependent plasticity, with no access to a global error
 signal, sculpt the low-dimensional, rotational, output-null population
